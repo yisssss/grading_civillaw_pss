@@ -27,6 +27,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "https://grading-civillaw-pss.onrender.com",
+        "https://grading-civillaw-pss-front.onrender.com",
     ],
     allow_credentials=True,
     allow_methods=["*"],

@@ -439,8 +439,8 @@ export default function StudentGrading() {
           answersApi.get(answer.id),
           gradeApi.getResult(answer.id),
         ]);
-        const scoreDetails = result.score_details || [];
-        const leafDetails = scoreDetails.filter((d) => d.is_leaf);
+        const scoreDetails: ScoreDetail[] = result.score_details || [];
+        const leafDetails = scoreDetails.filter((d: ScoreDetail) => d.is_leaf);
         const totalsBase = leafDetails.length ? leafDetails : scoreDetails;
         const totalScore = totalsBase.reduce((sum: number, d: ScoreDetail) => sum + (d.score ?? 0), 0);
         const totalMax = totalsBase.reduce((sum: number, d: ScoreDetail) => sum + (d.max_points ?? 0), 0);
@@ -517,7 +517,7 @@ export default function StudentGrading() {
             const childSummary = detail.is_leaf
               ? null
               : (() => {
-                  const children = Object.values(group.nodes).filter((d) =>
+                  const children = Object.values(group.nodes).filter((d: ScoreDetail) =>
                     d.section_id.startsWith(`${detail.section_id}.`) && d.is_leaf
                   );
                   const sum = children.reduce((acc, d) => acc + (d.score ?? 0), 0);
@@ -555,8 +555,12 @@ export default function StudentGrading() {
         const problemTabs = problemOrder
           .map((pid, idx) => {
             const totals = (() => {
-              const leafDetails = item.scoreDetails.filter((d) => d.is_leaf && d.section_id.startsWith(`${pid}.`));
-              const base = leafDetails.length ? leafDetails : item.scoreDetails.filter((d) => d.section_id.startsWith(`${pid}.`));
+              const leafDetails = item.scoreDetails.filter(
+                (d: ScoreDetail) => d.is_leaf && d.section_id.startsWith(`${pid}.`)
+              );
+              const base = leafDetails.length
+                ? leafDetails
+                : item.scoreDetails.filter((d: ScoreDetail) => d.section_id.startsWith(`${pid}.`));
               const score = base.reduce((sum, d) => sum + (d.score ?? 0), 0);
               const max = base.reduce((sum, d) => sum + (d.max_points ?? 0), 0);
               return { score, max };

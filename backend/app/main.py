@@ -114,60 +114,48 @@ class RubricCreatePayload(BaseModel):
     problems: List[RubricProblemPayload]
 
 
-# 프론트엔드와 동일: 헤딩(I. 문제의 제기 등)은 줄바꿈 유지, 나머지 줄은 공백으로 이어 붙임
-_HEADING_RE = re.compile(
-    r"^\s*(?!제\d+(?:조|항|호)(?:\s|$))"
-    r"(?:[ⅠⅡⅢⅣⅤⅥⅦⅧⅨIV]{1,6}\.|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨIV]{1,6}(?=\s|$)|\d+\.|\(\d+\)|\([가나다라마바사아자차카타파하]\))"
-)
-
-
-def normalize_answer_for_upload(text: str) -> str:
-    if not (text or "").strip():
-        return (text or "").strip()
-    lines = re.split(r"\r?\n", text)
-    result_lines: List[str] = []
-    current_paragraph: List[str] = []
-
-    def flush_paragraph() -> None:
-        if current_paragraph:
-            result_lines.append(" ".join(current_paragraph).strip())
-            current_paragraph.clear()
-
-    for raw_line in lines:
-        line = raw_line.strip()
-        if not line:
-            flush_paragraph()
-            continue
-        if _HEADING_RE.match(line):
-            flush_paragraph()
-            result_lines.append(line)
-            continue
-        current_paragraph.append(line)
-    flush_paragraph()
-    return "\n".join(result_lines)
-
-
-def _normalize_stored_answer_text(answer_text: str) -> str:
-    """DB에 저장된 '[문제 1]\\n...\\n\\n[문제 2]\\n...' 형식을 블록별로 정규화."""
-    if not (answer_text or "").strip():
-        return answer_text or ""
-    # [문제 N] 구간별로 분리 (정규식으로 세 블록 추출)
-    m = re.match(
-        r"\[문제\s*1\]\s*(.*?)\s*\[문제\s*2\]\s*(.*?)\s*\[문제\s*3\]\s*(.*)$",
-        answer_text.strip(),
-        re.DOTALL,
+def _repair_student_answers_sequence_if_needed(db) -> None:
+    """PostgreSQL에서 student_answers PK 시퀀스가 꼬인 경우 MAX(id)+1로 보정."""
+    bind = db.get_bind()
+    if not bind or bind.dialect.name != "postgresql":
+        return
+    table_name = StudentAnswer.__tablename__
+    db.execute(
+        text(
+            f"""
+            SELECT setval(
+                pg_get_serial_sequence('{table_name}', 'id'),
+                COALESCE((SELECT MAX(id) FROM {table_name}), 0) + 1,
+                false
+            )
+            """
+        )
     )
-    if not m:
-        return normalize_answer_for_upload(answer_text)
-    p1, p2, p3 = m.group(1).strip(), m.group(2).strip(), m.group(3).strip()
-    return (
-        "[문제 1]\n"
-        + normalize_answer_for_upload(p1)
-        + "\n\n[문제 2]\n"
-        + normalize_answer_for_upload(p2)
-        + "\n\n[문제 3]\n"
-        + normalize_answer_for_upload(p3)
-    )
+
+
+def _create_student_answer_with_retry(
+    db,
+    exam_id: int,
+    student_id: int,
+    answer_text: str,
+) -> StudentAnswer:
+    answer = StudentAnswer(exam_id=exam_id, student_id=student_id, answer_text=answer_text)
+    db.add(answer)
+    try:
+        db.commit()
+        db.refresh(answer)
+        return answer
+    except IntegrityError as exc:
+        db.rollback()
+        # Render(PostgreSQL)에서 간헐적으로 시퀀스 불일치가 발생해 PK 중복이 날 수 있음.
+        if "student_answers_pkey" not in str(exc):
+            raise
+        _repair_student_answers_sequence_if_needed(db)
+        answer = StudentAnswer(exam_id=exam_id, student_id=student_id, answer_text=answer_text)
+        db.add(answer)
+        db.commit()
+        db.refresh(answer)
+        return answer
 
 
 def _flatten_sections_from_payload(
@@ -522,13 +510,14 @@ async def upload_answer(
     if not student:
         raise HTTPException(status_code=404, detail="student not found")
 
-    raw_text = extract_text_from_pdf(await file.read())["text"]
-    answer_text = normalize_answer_for_upload(raw_text)
+    answer_text = extract_text_from_pdf(await file.read())["text"]
     print(f"[DEBUG] Extracted text preview (first 500 chars): {answer_text[:500]}")
-    answer = StudentAnswer(exam_id=exam.id, student_id=student.id, answer_text=answer_text)
-    db.add(answer)
-    db.commit()
-    db.refresh(answer)
+    answer = _create_student_answer_with_retry(
+        db=db,
+        exam_id=exam.id,
+        student_id=student.id,
+        answer_text=answer_text,
+    )
     return {"answer_id": answer.id}
 
 
@@ -548,32 +537,18 @@ def upload_answer_text(
     if not student:
         raise HTTPException(status_code=404, detail="student not found")
 
-    p1 = normalize_answer_for_upload(problem1_text.strip())
-    p2 = normalize_answer_for_upload(problem2_text.strip())
-    p3 = normalize_answer_for_upload(problem3_text.strip())
+    p1 = problem1_text
+    p2 = problem2_text
+    p3 = problem3_text
     answer_text = f"[문제 1]\n{p1}\n\n[문제 2]\n{p2}\n\n[문제 3]\n{p3}"
     print(f"[DEBUG] Text answer length: {len(answer_text)} chars")
-    answer = StudentAnswer(exam_id=exam.id, student_id=student.id, answer_text=answer_text)
-    db.add(answer)
-    db.commit()
-    db.refresh(answer)
+    answer = _create_student_answer_with_retry(
+        db=db,
+        exam_id=exam.id,
+        student_id=student.id,
+        answer_text=answer_text,
+    )
     return {"answer_id": answer.id}
-
-
-@app.post("/answers/normalize-all")
-def normalize_all_answers(db=Depends(get_db)) -> dict:
-    """DB에 이미 저장된 모든 답안의 answer_text를 문단 정규화(헤딩 유지, 나머지 줄 합침)로 일괄 수정."""
-    answers = db.query(StudentAnswer).all()
-    updated = 0
-    for answer in answers:
-        if not (answer.answer_text or "").strip():
-            continue
-        new_text = _normalize_stored_answer_text(answer.answer_text)
-        if new_text != answer.answer_text:
-            answer.answer_text = new_text
-            updated += 1
-    db.commit()
-    return {"total": len(answers), "updated": updated}
 
 
 @app.get("/answers/{answer_id}")

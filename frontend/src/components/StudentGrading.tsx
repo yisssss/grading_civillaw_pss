@@ -127,51 +127,6 @@ function splitByProblemHeadings(text: string) {
   return { chunks, order };
 }
 
-function normalizeAnswerForUpload(text: string) {
-  if (!text) return "";
-  const lines = text.split(/\r?\n/);
-  const headingRegex =
-    /^\s*(?!제\d+(조|항|호)\b)(?:[ⅠⅡⅢⅣⅤⅥⅦⅧⅨIV]{1,6}\.|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨIV]{1,6}(?=\s|$)|\d+\.|\(\d+\)|\([가나다라마바사아자차카타파하]\))/;
-
-  const resultLines: string[] = [];
-  let currentParagraph = "";
-
-  const flushParagraph = () => {
-    const trimmed = currentParagraph.trim();
-    if (trimmed) {
-      resultLines.push(trimmed);
-    }
-    currentParagraph = "";
-  };
-
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-
-    // 빈 줄은 문단 구분으로 사용
-    if (!line) {
-      flushParagraph();
-      continue;
-    }
-
-    // 로마숫자/번호/괄호 등 헤딩 라인은 항상 단독 줄로 유지
-    if (headingRegex.test(line)) {
-      flushParagraph();
-      resultLines.push(line);
-      continue;
-    }
-
-    // 그 외 줄은 같은 문단 안에서 공백으로만 이어 붙임
-    if (!currentParagraph) {
-      currentParagraph = line;
-    } else {
-      currentParagraph += " " + line;
-    }
-  }
-
-  flushParagraph();
-  return resultLines.join("\n");
-}
-
 function normalizeText(value: string) {
   return value.trim().toLowerCase().replace(/\s+/g, "");
 }
@@ -377,9 +332,9 @@ export default function StudentGrading() {
       const form = new FormData();
       form.append("exam_id", String(textExamId));
       form.append("student_id", String(textStudentId));
-      form.append("problem1_text", normalizeAnswerForUpload(problem1Text));
-      form.append("problem2_text", normalizeAnswerForUpload(problem2Text));
-      form.append("problem3_text", normalizeAnswerForUpload(problem3Text));
+      form.append("problem1_text", problem1Text);
+      form.append("problem2_text", problem2Text);
+      form.append("problem3_text", problem3Text);
       const res = await answersApi.uploadText(form);
       await gradeApi.run(res.answer_id, true);
       setTextUploadMessage("업로드 및 채점 완료!");

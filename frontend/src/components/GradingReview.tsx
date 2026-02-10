@@ -380,7 +380,7 @@ export default function GradingReview() {
       await gradeApi.updateResult(selectedAnswerId, payload);
       setScoreDetails(updatedScoreDetails);
       setResultPayload(payload);
-      await loadAnswers(selectedExam ?? undefined, selectedStudentFilter);
+      if (selectedExam != null) await loadAnswers(selectedExam, selectedStudentFilter);
       setActionMessage("채점 내역이 저장되었습니다.");
     } catch {
       setActionMessage("저장 실패: 서버 요청을 확인하세요.");

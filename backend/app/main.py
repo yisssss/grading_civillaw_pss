@@ -9,6 +9,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 from weasyprint import HTML
 
 from .database import Base, engine, get_db
@@ -592,6 +593,25 @@ def list_answers(
     return {"items": items}
 
 
+def _save_grading_result(db, answer_id: int, result_json: str) -> None:
+    """채점 결과 저장. 기존 행이 있으면 갱신, 없으면 INSERT. 시퀀스 꼬임 시 재시도로 업데이트."""
+    row = db.query(GradingResult).filter(GradingResult.answer_id == answer_id).first()
+    if row:
+        row.result_json = result_json
+    else:
+        db.add(GradingResult(answer_id=answer_id, result_json=result_json))
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        row = db.query(GradingResult).filter(GradingResult.answer_id == answer_id).first()
+        if row:
+            row.result_json = result_json
+            db.commit()
+        else:
+            raise
+
+
 @app.post("/grade/run")
 def grade_run(
     answer_id: int,
@@ -622,17 +642,7 @@ def grade_run(
         print(f"[DEBUG] LLM returned {len(llm_results)} results")
         final_result = merge_llm_results(base_result, llm_results)
 
-    payload = json.dumps(final_result, ensure_ascii=False)
-    existing = (
-        db.query(GradingResult)
-        .filter(GradingResult.answer_id == answer.id)
-        .first()
-    )
-    if existing:
-        existing.result_json = payload
-    else:
-        db.add(GradingResult(answer_id=answer.id, result_json=payload))
-    db.commit()
+    _save_grading_result(db, answer.id, json.dumps(final_result, ensure_ascii=False))
     return final_result
 
 

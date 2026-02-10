@@ -815,8 +815,12 @@ def _render_pdf_html(records: List[dict]) -> str:
     <head>
       <meta charset=\"utf-8\" />
       <style>
+        @font-face {{
+          font-family: 'Noto Sans KR';
+          src: url('https://fonts.gstatic.com/s/notosanskr/v27/Pj_zJwpxCwjiQLQabb69_8EabcghS6UT.ttf') format('truetype');
+        }}
         @page {{ size: A4; margin: 12mm; }}
-        body {{ font-family: 'Segoe UI', sans-serif; color: #111; font-size: 9pt; }}
+        body {{ font-family: 'Noto Sans KR', 'Malgun Gothic', 'Segoe UI', sans-serif; color: #111; font-size: 9pt; }}
         .page {{ page-break-after: always; }}
         .page:last-child {{ page-break-after: auto; }}
         .header {{ margin-bottom: 8px; }}

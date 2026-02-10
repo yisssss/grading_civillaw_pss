@@ -11,6 +11,7 @@ type ScoreDetail = {
   deductions?: { reason: string; penalty: number }[];
   keywords?: string[];
   is_leaf?: boolean;
+  is_bonus?: boolean;
   writing_status?: "Missing" | "Incomplete" | "Full";
   llm?: { note?: string };
 };
@@ -513,7 +514,9 @@ export default function StudentGrading() {
               : "";
 
             const body = isLeaf
-              ? `<div>점수: ${detail.score} / ${detail.max_points}</div>${deductionsHtml}${noteHtml}`
+              ? detail.is_bonus
+                ? `<div style="color:#2563eb">가산: +${detail.score}</div>${deductionsHtml}${noteHtml}`
+                : `<div>점수: ${detail.score} / ${detail.max_points}</div>${deductionsHtml}${noteHtml}`
               : `<div class="subsum">하위 항목 합계: ${childSummary ? childSummary.sum.toFixed(2) : "0.00"} / ${
                   childSummary ? childSummary.max.toFixed(2) : "0.00"
                 }</div>`;
@@ -1284,7 +1287,11 @@ export default function StudentGrading() {
                           {isLeaf ? (
                             <>
                               <div>
-                                점수: {detail.score} / {detail.max_points}
+                                {detail.is_bonus ? (
+                                  <span className="text-blue-600">가산: +{detail.score}</span>
+                                ) : (
+                                  <>점수: {detail.score} / {detail.max_points}</>
+                                )}
                               </div>
                               {hasDeductions && (
                                 <ul className="text-sm text-red-600">

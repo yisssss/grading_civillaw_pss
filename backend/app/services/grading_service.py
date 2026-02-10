@@ -156,10 +156,11 @@ def grade_basic(
 
         section_id = str(section.get("id", ""))
         is_target = is_leaf(section_id)
-        # 배점 0 = 가산 문항(기본 0점, 담당자가 채점검토에서 +1 부여 가능)
+        # 배점 0 = 가산 문항(기본 0점, 담당자가 +1 부여 가능). max_points는 0으로 두어 만점에 합산 안 됨.
         pts_val = float(points)
-        max_points = 1.0 if pts_val == 0 else pts_val
-        print(f"[DEBUG GRADE] Section {section_id}: points={pts_val}, max_points={max_points}, is_leaf={is_target}, bonus={pts_val == 0}")
+        max_points = 0.0 if pts_val == 0 else pts_val
+        is_bonus = pts_val == 0
+        print(f"[DEBUG GRADE] Section {section_id}: points={pts_val}, max_points={max_points}, is_leaf={is_target}, bonus={is_bonus}")
         if is_target:
             print("[DEBUG GRADE] -> Leaf section")
         else:
@@ -179,6 +180,7 @@ def grade_basic(
                 "keywords": [],
                 "articles": section.get("articles", []),
                 "is_leaf": is_target,
+                "is_bonus": is_bonus,
             }
         )
 

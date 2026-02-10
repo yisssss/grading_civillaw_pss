@@ -10,6 +10,7 @@ type ScoreDetail = {
   score: number;
   deductions?: { reason: string; penalty: number }[];
   is_leaf?: boolean;
+  is_bonus?: boolean;
   llm?: { note?: string };
 };
 
@@ -1050,7 +1051,11 @@ export default function GradingReview() {
                             </button>
                             {!isActive && isLeaf && (
                               <div className={hasDeductions ? "text-red-600" : "text-gray-800"}>
-                                점수: {detail.score} / {detail.max_points}
+                                {detail.is_bonus ? (
+                                  <span className="text-blue-600">가산: +{detail.score}</span>
+                                ) : (
+                                  <>점수: {detail.score} / {detail.max_points}</>
+                                )}
                               </div>
                             )}
                             {!isActive && !isLeaf && (
@@ -1062,15 +1067,24 @@ export default function GradingReview() {
                             {isActive && isLeaf && (
                               <div className="grid gap-2 mt-2">
                                 <div className="flex items-center gap-2">
-                                  <span className="text-sm text-gray-600">점수</span>
+                                  <span className="text-sm text-gray-600">
+                                    {detail.is_bonus ? "가산점" : "점수"}
+                                  </span>
                                   <input
                                     className="border p-1 rounded w-24"
                                     type="number"
-                                    step="0.5"
+                                    min={0}
+                                    max={detail.is_bonus ? 1 : undefined}
+                                    step={detail.is_bonus ? 1 : 0.5}
                                     value={editScore}
                                     onChange={(e) => setEditScore(e.target.value)}
                                   />
-                                  <span className="text-xs text-gray-500">/ {detail.max_points}</span>
+                                  {!detail.is_bonus && (
+                                    <span className="text-xs text-gray-500">/ {detail.max_points}</span>
+                                  )}
+                                  {detail.is_bonus && (
+                                    <span className="text-xs text-blue-600">(0 또는 +1)</span>
+                                  )}
                                 </div>
                                 <div>
                                   <div className="flex items-center justify-between">

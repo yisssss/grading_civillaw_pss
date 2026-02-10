@@ -6,6 +6,8 @@ from typing import Dict, List, Optional
 
 import google.generativeai as genai
 from google.generativeai import caching
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 from ..config import get_settings
 from .answer_parser import split_by_problem_headings
@@ -207,6 +209,25 @@ def grade_with_gemini(
     # 문제별 텍스트 청크 (문제 헤딩 기준)
     problem_chunks = split_by_problem_headings(cleaned_student)
 
+    safety_settings = [
+        {
+            "category": HarmCategory.HARM_CATEGORY_HARASSMENT,
+            "threshold": HarmBlockThreshold.BLOCK_NONE,
+        },
+        {
+            "category": HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+            "threshold": HarmBlockThreshold.BLOCK_NONE,
+        },
+        {
+            "category": HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+            "threshold": HarmBlockThreshold.BLOCK_NONE,
+        },
+        {
+            "category": HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+            "threshold": HarmBlockThreshold.BLOCK_NONE,
+        },
+    ]
+
     for problem_num, batch in problem_batches.items():
         print(f"[DEBUG LLM] Processing problem {problem_num}, {len(batch)} sections: {[s.get('id') for s in batch]}")
         batch_prompt = _build_batch_prompt(batch)
@@ -242,8 +263,9 @@ def grade_with_gemini(
                             batch_prompt,
                             generation_config={
                                 "temperature": 0.2,
-                                "max_output_tokens": 2048,
+                                "max_output_tokens": 4096,
                             },
+                            safety_settings=safety_settings,
                         )
                     else:
                         # 캐시 없이 실행
@@ -256,8 +278,9 @@ def grade_with_gemini(
                             full_prompt,
                             generation_config={
                                 "temperature": 0.2,
-                                "max_output_tokens": 2048,
+                                "max_output_tokens": 4096,
                             },
+                            safety_settings=safety_settings,
                         )
 
                     raw_text = (response.text or "").strip()

@@ -42,6 +42,8 @@ type UploadItem = {
   studentId: number | null;
 };
 
+type AnswerSortKey = "name" | "student_id" | "score_desc";
+
 function splitParagraphs(text: string) {
   return text.split(/\n{2,}/).map((t) => t.trim()).filter(Boolean);
 }
@@ -124,6 +126,51 @@ function splitByProblemHeadings(text: string) {
   return { chunks, order };
 }
 
+function normalizeAnswerForUpload(text: string) {
+  if (!text) return "";
+  const lines = text.split(/\r?\n/);
+  const headingRegex =
+    /^\s*(?!제\d+(조|항|호)\b)(?:[ⅠⅡⅢⅣⅤⅥⅦⅧⅨIV]{1,6}\.|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨIV]{1,6}(?=\s|$)|\d+\.|\(\d+\)|\([가나다라마바사아자차카타파하]\))/;
+
+  const resultLines: string[] = [];
+  let currentParagraph = "";
+
+  const flushParagraph = () => {
+    const trimmed = currentParagraph.trim();
+    if (trimmed) {
+      resultLines.push(trimmed);
+    }
+    currentParagraph = "";
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+
+    // 빈 줄은 문단 구분으로 사용
+    if (!line) {
+      flushParagraph();
+      continue;
+    }
+
+    // 로마숫자/번호/괄호 등 헤딩 라인은 항상 단독 줄로 유지
+    if (headingRegex.test(line)) {
+      flushParagraph();
+      resultLines.push(line);
+      continue;
+    }
+
+    // 그 외 줄은 같은 문단 안에서 공백으로만 이어 붙임
+    if (!currentParagraph) {
+      currentParagraph = line;
+    } else {
+      currentParagraph += " " + line;
+    }
+  }
+
+  flushParagraph();
+  return resultLines.join("\n");
+}
+
 function normalizeText(value: string) {
   return value.trim().toLowerCase().replace(/\s+/g, "");
 }
@@ -150,6 +197,12 @@ function formatDate(value?: string) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
+function formatDateOnly(value?: string) {
+  if (!value) return "-";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString();
+}
+
 function escapeHtml(value: string) {
   return value
     .replace(/&/g, "&amp;")
@@ -174,34 +227,8 @@ function buildUploadQueue(files: File[], students: Student[], prev: UploadItem[]
   });
 }
 
-function parseCsvStudents(text: string) {
-  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  if (!lines.length) return { items: [] as { student_id: string; name: string }[], errors: [] as string[] };
-
-  const rows = lines.map((line) => line.split(",").map((cell) => cell.trim()));
-  const header = rows[0].map((cell) => cell.toLowerCase());
-  const hasHeader =
-    header.includes("student_id") ||
-    header.includes("name") ||
-    header.includes("학번") ||
-    header.includes("이름");
-
-  const items: { student_id: string; name: string }[] = [];
-  const errors: string[] = [];
-  const startIndex = hasHeader ? 1 : 0;
-
-  for (let i = startIndex; i < rows.length; i += 1) {
-    const [student_id, name] = rows[i];
-    if (!student_id || !name) {
-      errors.push(`줄 ${i + 1}: 학번/이름 누락`);
-      continue;
-    }
-    items.push({ student_id, name });
-  }
-  return { items, errors };
-}
-
 export default function StudentGrading() {
+  const showPdfUpload = false;
   const [exams, setExams] = useState<Exam[]>([]);
   const [students, setStudents] = useState<Student[]>([]);
   const [answers, setAnswers] = useState<AnswerItem[]>([]);
@@ -210,13 +237,7 @@ export default function StudentGrading() {
   const [selectedExam, setSelectedExam] = useState<number | null>(null);
   const [selectedStudentFilter, setSelectedStudentFilter] = useState<number | null>(null);
   const [studentSearch, setStudentSearch] = useState("");
-
-  const [studentId, setStudentId] = useState("");
-  const [studentName, setStudentName] = useState("");
-  const [studentMessage, setStudentMessage] = useState("");
-
-  const [csvFile, setCsvFile] = useState<File | null>(null);
-  const [csvMessage, setCsvMessage] = useState("");
+  const [answerSortKey, setAnswerSortKey] = useState<AnswerSortKey>("name");
 
   const [answerFiles, setAnswerFiles] = useState<File[]>([]);
   const [uploadQueue, setUploadQueue] = useState<UploadItem[]>([]);
@@ -283,50 +304,6 @@ export default function StudentGrading() {
       setScoreDetails([]);
     }
   }, [answers, selectedAnswerId]);
-
-  const handleCreateStudent = async () => {
-    if (!studentId || !studentName) {
-      setStudentMessage("학번과 이름을 입력하세요.");
-      return;
-    }
-    try {
-      await studentsApi.create({ student_id: studentId, name: studentName });
-      setStudentMessage("학생 등록 완료");
-      setStudentId("");
-      setStudentName("");
-      const studentsData = await studentsApi.list();
-      setStudents(studentsData.items ?? []);
-    } catch {
-      setStudentMessage("학생 등록 실패 (중복 여부 확인)");
-    }
-  };
-
-  const handleCsvUpload = async () => {
-    if (!csvFile) {
-      setCsvMessage("CSV 파일을 선택하세요.");
-      return;
-    }
-    const text = await csvFile.text();
-    const { items, errors } = parseCsvStudents(text);
-    if (!items.length) {
-      setCsvMessage("등록할 학생 데이터가 없습니다.");
-      return;
-    }
-    let success = 0;
-    const failed: string[] = [...errors];
-    for (const item of items) {
-      try {
-        await studentsApi.create(item);
-        success += 1;
-      } catch {
-        failed.push(`${item.student_id}/${item.name}: 실패`);
-      }
-    }
-    const studentsData = await studentsApi.list();
-    setStudents(studentsData.items ?? []);
-    setCsvMessage(`성공 ${success}명, 실패 ${failed.length}건${failed.length ? `: ${failed.join(", ")}` : ""}`);
-    setCsvFile(null);
-  };
 
   const handleUploadAnswers = async () => {
     if (!selectedExam) {
@@ -398,9 +375,9 @@ export default function StudentGrading() {
       const form = new FormData();
       form.append("exam_id", String(textExamId));
       form.append("student_id", String(textStudentId));
-      form.append("problem1_text", problem1Text);
-      form.append("problem2_text", problem2Text);
-      form.append("problem3_text", problem3Text);
+      form.append("problem1_text", normalizeAnswerForUpload(problem1Text));
+      form.append("problem2_text", normalizeAnswerForUpload(problem2Text));
+      form.append("problem3_text", normalizeAnswerForUpload(problem3Text));
       const res = await answersApi.uploadText(form);
       await gradeApi.run(res.answer_id, true);
       setTextUploadMessage("업로드 및 채점 완료!");
@@ -702,6 +679,24 @@ export default function StudentGrading() {
     return students.filter((student) => normalizeText(`${student.student_id} ${student.name}`).includes(keyword));
   }, [students, studentSearch]);
 
+  const sortedAnswers = useMemo(() => {
+    const list = [...answers];
+    list.sort((a, b) => {
+      const studentA = studentsById.get(a.student_id);
+      const studentB = studentsById.get(b.student_id);
+      if (answerSortKey === "student_id") {
+        return (studentA?.student_id ?? "").localeCompare(studentB?.student_id ?? "");
+      }
+      if (answerSortKey === "score_desc") {
+        const scoreA = resultsMap[a.id]?.total_score ?? 0;
+        const scoreB = resultsMap[b.id]?.total_score ?? 0;
+        return scoreB - scoreA;
+      }
+      return (studentA?.name ?? "").localeCompare(studentB?.name ?? "");
+    });
+    return list;
+  }, [answers, answerSortKey, resultsMap, studentsById]);
+
   const formattedAnswer = useMemo(() => formatAnswerForDisplay(answerText), [answerText]);
   const { chunks: problemChunks } = useMemo(
     () => splitByProblemHeadings(formattedAnswer),
@@ -798,39 +793,40 @@ export default function StudentGrading() {
 
   return (
     <div className="grid gap-6">
-      <div className="card">
-        <h2 className="text-xl font-semibold mb-4">학생 답안 업로드</h2>
-        <div className="grid gap-3 md:grid-cols-3">
-          <div>
-            <label className="block mb-1">시험 선택</label>
-            <select
-              className="border p-2 rounded w-full"
-              value={selectedExam ?? ""}
-              onChange={(e) => setSelectedExam(Number(e.target.value))}
-            >
-              <option value="">선택</option>
-              {exams.map((exam) => (
-                <option key={exam.id} value={exam.id}>
-                  {exam.name}
-                </option>
-              ))}
-            </select>
+      {showPdfUpload && (
+        <div className="card">
+          <h2 className="text-xl font-semibold mb-4">학생 답안 업로드</h2>
+          <div className="grid gap-3 md:grid-cols-3">
+            <div>
+              <label className="block mb-1">시험 선택</label>
+              <select
+                className="border p-2 rounded w-full"
+                value={selectedExam ?? ""}
+                onChange={(e) => setSelectedExam(Number(e.target.value))}
+              >
+                <option value="">선택</option>
+                {exams.map((exam) => (
+                  <option key={exam.id} value={exam.id}>
+                    {exam.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="md:col-span-2">
+              <label className="block mb-1">답안 PDF (다중 업로드 가능)</label>
+              <input
+                type="file"
+                multiple
+                onChange={(e) => {
+                  setAnswerFiles(Array.from(e.target.files ?? []));
+                  setUploadMessage("");
+                }}
+              />
+              <p className="text-sm text-gray-600 mt-1">
+                파일명의 마지막 단어(공백 기준)를 학생 이름과 매칭합니다. 예: [베리타스 3개월 기록형 답안지] 민법 1회 2602-0006 정윤서.pdf
+              </p>
+            </div>
           </div>
-          <div className="md:col-span-2">
-            <label className="block mb-1">답안 PDF (다중 업로드 가능)</label>
-            <input
-              type="file"
-              multiple
-              onChange={(e) => {
-                setAnswerFiles(Array.from(e.target.files ?? []));
-                setUploadMessage("");
-              }}
-            />
-            <p className="text-sm text-gray-600 mt-1">
-              파일명의 마지막 단어(공백 기준)를 학생 이름과 매칭합니다. 예: [베리타스 3개월 기록형 답안지] 민법 1회 2602-0006 정윤서.pdf
-            </p>
-          </div>
-        </div>
 
         {uploadQueue.length > 0 && (
           <div className="mt-4 border rounded p-3">
@@ -866,11 +862,12 @@ export default function StudentGrading() {
           </div>
         )}
 
-        <button className="bg-blue-600 text-white rounded px-4 py-2 mt-3" onClick={handleUploadAnswers}>
-          답안 업로드 & 채점
-        </button>
-        {uploadMessage && <div className="mt-2 text-sm text-gray-700">{uploadMessage}</div>}
-      </div>
+          <button className="bg-blue-600 text-white rounded px-4 py-2 mt-3" onClick={handleUploadAnswers}>
+            답안 업로드 & 채점
+          </button>
+          {uploadMessage && <div className="mt-2 text-sm text-gray-700">{uploadMessage}</div>}
+        </div>
+      )}
 
       <div className="card">
         <h2 className="text-xl font-semibold mb-4">학생 답안 텍스트 직접 입력</h2>
@@ -947,96 +944,6 @@ export default function StudentGrading() {
       </div>
 
       <div className="card">
-        <h2 className="text-xl font-semibold mb-4">학생 등록</h2>
-        <div className="grid gap-3 md:grid-cols-2">
-          <input
-            className="border p-2 rounded"
-            placeholder="학번"
-            value={studentId}
-            onChange={(e) => setStudentId(e.target.value)}
-          />
-          <input
-            className="border p-2 rounded"
-            placeholder="이름"
-            value={studentName}
-            onChange={(e) => setStudentName(e.target.value)}
-          />
-        </div>
-        <button className="bg-gray-900 text-white rounded px-4 py-2 mt-3" onClick={handleCreateStudent}>
-          학생 등록
-        </button>
-        {studentMessage && <div className="mt-2 text-sm text-gray-700">{studentMessage}</div>}
-
-        <div className="mt-6 border-t pt-4">
-          <h3 className="font-semibold mb-2">CSV 대량 등록</h3>
-          <div className="grid gap-2 md:grid-cols-3">
-            <input
-              type="file"
-              accept=".csv"
-              onChange={(e) => {
-                setCsvFile(e.target.files?.[0] ?? null);
-                setCsvMessage("");
-              }}
-            />
-            <button className="bg-blue-600 text-white rounded px-4 py-2" onClick={handleCsvUpload}>
-              CSV 업로드
-            </button>
-            <div className="text-sm text-gray-600">형식: 학번,이름 (첫 줄 헤더 가능)</div>
-          </div>
-          {csvMessage && <div className="mt-2 text-sm text-gray-700">{csvMessage}</div>}
-        </div>
-
-        <div className="mt-6 border-t pt-4">
-          <h3 className="font-semibold mb-2">등록된 학생 목록</h3>
-          <div className="overflow-x-auto max-h-60 overflow-y-auto">
-            <table className="min-w-full text-sm border">
-              <thead className="bg-gray-100">
-                <tr>
-                  <th className="text-left p-2 border">학번</th>
-                  <th className="text-left p-2 border">이름</th>
-                  <th className="text-left p-2 border">삭제</th>
-                </tr>
-              </thead>
-              <tbody>
-                {students.map((student) => (
-                  <tr key={student.id} className="border-t">
-                    <td className="p-2 border">{student.student_id}</td>
-                    <td className="p-2 border">{student.name}</td>
-                    <td className="p-2 border">
-                      <button
-                        className="text-red-600 underline"
-                        onClick={async () => {
-                          if (confirm(`${student.name} 학생을 삭제하시겠습니까? (연관된 답안도 모두 삭제됩니다)`)) {
-                            try {
-                              await studentsApi.delete(student.id);
-                              const studentsData = await studentsApi.list();
-                              setStudents(studentsData.items ?? []);
-                              if (selectedExam) await loadAnswers(selectedExam, selectedStudentFilter);
-                            } catch {
-                              alert("삭제 실패");
-                            }
-                          }
-                        }}
-                      >
-                        삭제
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-                {!students.length && (
-                  <tr>
-                    <td className="p-3 text-center text-gray-500" colSpan={3}>
-                      등록된 학생이 없습니다.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-
-      <div className="card">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-xl font-semibold">학생 답안 리스트</h2>
           <div className="flex items-center gap-3">
@@ -1086,9 +993,35 @@ export default function StudentGrading() {
               ))}
             </select>
           </div>
+          <div className="flex items-end gap-2">
+            <button
+              className={`px-3 py-2 rounded border ${
+                answerSortKey === "name" ? "bg-blue-600 text-white" : "bg-gray-100"
+              }`}
+              onClick={() => setAnswerSortKey("name")}
+            >
+              가나다순
+            </button>
+            <button
+              className={`px-3 py-2 rounded border ${
+                answerSortKey === "student_id" ? "bg-blue-600 text-white" : "bg-gray-100"
+              }`}
+              onClick={() => setAnswerSortKey("student_id")}
+            >
+              학번순
+            </button>
+            <button
+              className={`px-3 py-2 rounded border ${
+                answerSortKey === "score_desc" ? "bg-blue-600 text-white" : "bg-gray-100"
+              }`}
+              onClick={() => setAnswerSortKey("score_desc")}
+            >
+              높은 점수순
+            </button>
+          </div>
         </div>
 
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto max-h-72 overflow-y-auto">
           <table className="min-w-full text-sm border">
             <thead className="bg-gray-100">
               <tr>
@@ -1102,11 +1035,14 @@ export default function StudentGrading() {
               </tr>
             </thead>
             <tbody>
-              {answers.map((answer) => {
+              {sortedAnswers.map((answer) => {
                 const student = studentsById.get(answer.student_id);
                 const result = resultsMap[answer.id];
                 return (
-                  <tr key={answer.id} className="border-t">
+                  <tr
+                    key={answer.id}
+                    className={`border-t ${selectedAnswerId === answer.id ? "bg-yellow-50" : ""}`}
+                  >
                     <td className="p-2 border">{answer.id}</td>
                     <td className="p-2 border">
                       {student?.name ?? "-"} ({student?.student_id ?? "-"})
@@ -1115,7 +1051,7 @@ export default function StudentGrading() {
                     <td className="p-2 border">
                       {result ? `${result.total_score} / ${result.total_max}` : "-"}
                     </td>
-                    <td className="p-2 border">{formatDate(answer.created_at)}</td>
+                    <td className="p-2 border">{formatDateOnly(answer.created_at)}</td>
                     <td className="p-2 border">
                       <button className="text-blue-600 underline" onClick={() => loadAnswerDetail(answer.id)}>
                         보기
@@ -1125,7 +1061,7 @@ export default function StudentGrading() {
                       <button
                         className="text-red-600 underline"
                         onClick={async () => {
-                          if (confirm("이 답안을 삭제하시겠습니까?")) {
+                          if (confirm("삭제하시겠습니까?")) {
                             try {
                               await answersApi.delete(answer.id);
                               if (selectedExam) await loadAnswers(selectedExam, selectedStudentFilter);
@@ -1151,20 +1087,19 @@ export default function StudentGrading() {
             </tbody>
           </table>
         </div>
-      </div>
 
-      {selectedAnswerId && (
-        <div className="card h-[75vh] overflow-y-auto">
-          <div className="grid gap-6 md:grid-cols-[3fr_2fr]">
-            <div>
-              <div className="flex items-center justify-between mb-2">
+        {selectedAnswerId && (
+          <div className="mt-10 border-t h-[60vh] overflow-y-auto bg-white">
+          <div className="sticky top-0 z-10 bg-white border-b pb-2">
+            <div className="grid gap-6 md:grid-cols-[3fr_2fr]">
+              <div className="flex items-center justify-between">
                 <h3 className="font-semibold">
-                학생 답안
-                {selectedStudent && (
-                  <span className="ml-2 text-sm text-gray-600">
-                    {selectedStudent.name} ({selectedStudent.student_id})
-                  </span>
-                )}
+                  학생 답안
+                  {selectedStudent && (
+                    <span className="ml-2 text-sm text-gray-600">
+                      {selectedStudent.name} ({selectedStudent.student_id})
+                    </span>
+                  )}
                 </h3>
                 <div className="flex items-center gap-2 text-sm text-gray-600">
                   <span>글씨 크기</span>
@@ -1183,8 +1118,15 @@ export default function StudentGrading() {
                   </button>
                 </div>
               </div>
+              <div className="flex items-center">
+                <h3 className="font-semibold">채점 내역</h3>
+              </div>
+            </div>
+          </div>
+          <div className="grid gap-6 md:grid-cols-[3fr_2fr] pt-6">
+            <div>
               <div className="flex gap-3">
-                <div className="flex flex-col gap-2 border-r pr-2 w-20 sticky top-2 self-start bg-white">
+                <div className="flex flex-col gap-2 border-r pr-2 w-20 sticky top-16 self-start bg-white">
                   {["1", "2", "3"].map((num) => {
                     const total = problemTotals[num];
                     return (
@@ -1262,7 +1204,6 @@ export default function StudentGrading() {
               </div>
             </div>
             <div>
-              <h3 className="font-semibold mb-2">채점 내역</h3>
             {Object.entries(scoreTreeByProblem)
               .filter(([problemId]) => problemId === selectedProblemTab)
               .map(([problemId, group]) => (
@@ -1350,7 +1291,8 @@ export default function StudentGrading() {
             </div>
           </div>
         </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

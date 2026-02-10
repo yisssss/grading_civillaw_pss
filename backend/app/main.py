@@ -1,11 +1,15 @@
 import json
+import re
+import io
+import zipfile
 from typing import Dict, List, Optional
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
+from weasyprint import HTML
 
 from .database import Base, engine, get_db
 from .models import Exam, GradingResult, Student, StudentAnswer
@@ -40,12 +44,26 @@ class StudentCreate(BaseModel):
     name: str
 
 
+class StudentUpdate(BaseModel):
+    student_id: str
+    name: str
+
+
 class ExamUpdate(BaseModel):
     name: str
 
 
 class ExamCreate(BaseModel):
     name: str
+
+
+class ResultUpdate(BaseModel):
+    result_json: dict
+
+
+class ExportPdfRequest(BaseModel):
+    answer_ids: List[int]
+    mode: str
 
 
 class RubricSectionNode(BaseModel):
@@ -74,6 +92,62 @@ class RubricCreatePayload(BaseModel):
     exam_id: int
     context: List[RubricContextPayload]
     problems: List[RubricProblemPayload]
+
+
+# 프론트엔드와 동일: 헤딩(I. 문제의 제기 등)은 줄바꿈 유지, 나머지 줄은 공백으로 이어 붙임
+_HEADING_RE = re.compile(
+    r"^\s*(?!제\d+(?:조|항|호)(?:\s|$))"
+    r"(?:[ⅠⅡⅢⅣⅤⅥⅦⅧⅨIV]{1,6}\.|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨIV]{1,6}(?=\s|$)|\d+\.|\(\d+\)|\([가나다라마바사아자차카타파하]\))"
+)
+
+
+def normalize_answer_for_upload(text: str) -> str:
+    if not (text or "").strip():
+        return (text or "").strip()
+    lines = re.split(r"\r?\n", text)
+    result_lines: List[str] = []
+    current_paragraph: List[str] = []
+
+    def flush_paragraph() -> None:
+        if current_paragraph:
+            result_lines.append(" ".join(current_paragraph).strip())
+            current_paragraph.clear()
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            flush_paragraph()
+            continue
+        if _HEADING_RE.match(line):
+            flush_paragraph()
+            result_lines.append(line)
+            continue
+        current_paragraph.append(line)
+    flush_paragraph()
+    return "\n".join(result_lines)
+
+
+def _normalize_stored_answer_text(answer_text: str) -> str:
+    """DB에 저장된 '[문제 1]\\n...\\n\\n[문제 2]\\n...' 형식을 블록별로 정규화."""
+    if not (answer_text or "").strip():
+        return answer_text or ""
+    # [문제 N] 구간별로 분리 (정규식으로 세 블록 추출)
+    m = re.match(
+        r"\[문제\s*1\]\s*(.*?)\s*\[문제\s*2\]\s*(.*?)\s*\[문제\s*3\]\s*(.*)$",
+        answer_text.strip(),
+        re.DOTALL,
+    )
+    if not m:
+        return normalize_answer_for_upload(answer_text)
+    p1, p2, p3 = m.group(1).strip(), m.group(2).strip(), m.group(3).strip()
+    return (
+        "[문제 1]\n"
+        + normalize_answer_for_upload(p1)
+        + "\n\n[문제 2]\n"
+        + normalize_answer_for_upload(p2)
+        + "\n\n[문제 3]\n"
+        + normalize_answer_for_upload(p3)
+    )
 
 
 def _flatten_sections_from_payload(
@@ -379,6 +453,25 @@ def create_student(payload: StudentCreate, db=Depends(get_db)) -> dict:
     return {"student_id": student.id, "name": student.name}
 
 
+@app.put("/students/{student_id}")
+def update_student(student_id: int, payload: StudentUpdate, db=Depends(get_db)) -> dict:
+    student = db.query(Student).filter(Student.id == student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="student not found")
+    duplicate = (
+        db.query(Student)
+        .filter(Student.student_id == payload.student_id, Student.id != student_id)
+        .first()
+    )
+    if duplicate:
+        raise HTTPException(status_code=400, detail="student_id already exists")
+    student.student_id = payload.student_id
+    student.name = payload.name
+    db.commit()
+    db.refresh(student)
+    return {"student_id": student.id, "name": student.name}
+
+
 @app.get("/students")
 def list_students(db=Depends(get_db)) -> dict:
     students = db.query(Student).order_by(Student.id.desc()).all()
@@ -409,7 +502,8 @@ async def upload_answer(
     if not student:
         raise HTTPException(status_code=404, detail="student not found")
 
-    answer_text = extract_text_from_pdf(await file.read())["text"]
+    raw_text = extract_text_from_pdf(await file.read())["text"]
+    answer_text = normalize_answer_for_upload(raw_text)
     print(f"[DEBUG] Extracted text preview (first 500 chars): {answer_text[:500]}")
     answer = StudentAnswer(exam_id=exam.id, student_id=student.id, answer_text=answer_text)
     db.add(answer)
@@ -434,13 +528,32 @@ def upload_answer_text(
     if not student:
         raise HTTPException(status_code=404, detail="student not found")
 
-    answer_text = f"[문제 1]\n{problem1_text.strip()}\n\n[문제 2]\n{problem2_text.strip()}\n\n[문제 3]\n{problem3_text.strip()}"
+    p1 = normalize_answer_for_upload(problem1_text.strip())
+    p2 = normalize_answer_for_upload(problem2_text.strip())
+    p3 = normalize_answer_for_upload(problem3_text.strip())
+    answer_text = f"[문제 1]\n{p1}\n\n[문제 2]\n{p2}\n\n[문제 3]\n{p3}"
     print(f"[DEBUG] Text answer length: {len(answer_text)} chars")
     answer = StudentAnswer(exam_id=exam.id, student_id=student.id, answer_text=answer_text)
     db.add(answer)
     db.commit()
     db.refresh(answer)
     return {"answer_id": answer.id}
+
+
+@app.post("/answers/normalize-all")
+def normalize_all_answers(db=Depends(get_db)) -> dict:
+    """DB에 이미 저장된 모든 답안의 answer_text를 문단 정규화(헤딩 유지, 나머지 줄 합침)로 일괄 수정."""
+    answers = db.query(StudentAnswer).all()
+    updated = 0
+    for answer in answers:
+        if not (answer.answer_text or "").strip():
+            continue
+        new_text = _normalize_stored_answer_text(answer.answer_text)
+        if new_text != answer.answer_text:
+            answer.answer_text = new_text
+            updated += 1
+    db.commit()
+    return {"total": len(answers), "updated": updated}
 
 
 @app.get("/answers/{answer_id}")
@@ -533,6 +646,264 @@ def get_result(answer_id: int, db=Depends(get_db)) -> dict:
     if not result:
         raise HTTPException(status_code=404, detail="result not found")
     return json.loads(result.result_json)
+
+
+@app.put("/results/{answer_id}")
+def update_result(answer_id: int, payload: ResultUpdate, db=Depends(get_db)) -> dict:
+    result = (
+        db.query(GradingResult)
+        .filter(GradingResult.answer_id == answer_id)
+        .first()
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="result not found")
+    result.result_json = json.dumps(payload.result_json, ensure_ascii=False)
+    db.commit()
+    db.refresh(result)
+    return {"answer_id": answer_id, "status": "updated"}
+
+
+def _split_by_problem_headings(text: str) -> Dict[str, str]:
+    chunks: Dict[str, str] = {}
+    order: List[str] = []
+    lines = text.splitlines()
+    heading_regex = re.compile(r"^\s*(?:\[)?(?:문제|문|설문)\s*(\d+)\s*[\]\.\):]?\s*(.*)$")
+    current: Optional[str] = None
+    buffer: List[str] = []
+
+    def flush() -> None:
+        nonlocal buffer
+        if not current:
+            buffer = []
+            return
+        content = "\n".join(buffer).strip()
+        if content:
+            chunks[current] = content
+        buffer = []
+
+    for line in lines:
+        match = heading_regex.match(line.strip())
+        if match:
+            flush()
+            current = match.group(1)
+            if current not in order:
+                order.append(current)
+            buffer = [line]
+            trailing = match.group(2).strip()
+            if trailing:
+                buffer.append(trailing)
+            continue
+        buffer.append(line)
+    flush()
+    return chunks
+
+
+def _build_score_tree(score_details: List[dict]) -> Dict[str, dict]:
+    by_problem: Dict[str, dict] = {}
+    for detail in score_details:
+        section_id = detail.get("section_id", "")
+        if not section_id:
+            continue
+        problem_id = section_id.split(".")[0]
+        if problem_id not in by_problem:
+            by_problem[problem_id] = {"nodes": {}, "roots": []}
+        by_problem[problem_id]["nodes"][section_id] = {**detail, "children": []}
+
+    for problem_id, data in by_problem.items():
+        nodes = data["nodes"]
+        for section_id in list(nodes.keys()):
+            parts = section_id.split(".")
+            parent_id = ".".join(parts[:-1]) if len(parts) > 1 else ""
+            if parent_id and parent_id in nodes:
+                nodes[parent_id]["children"].append(section_id)
+            else:
+                data["roots"].append(section_id)
+    return by_problem
+
+
+def _compute_problem_totals(score_details: List[dict]) -> Dict[str, Dict[str, float]]:
+    totals: Dict[str, Dict[str, float]] = {}
+    for detail in score_details:
+        if not detail.get("is_leaf", False):
+            continue
+        section_id = detail.get("section_id", "")
+        if not section_id:
+            continue
+        problem_id = section_id.split(".")[0]
+        if problem_id not in totals:
+            totals[problem_id] = {"score": 0.0, "max": 0.0}
+        totals[problem_id]["score"] += float(detail.get("score", 0) or 0)
+        totals[problem_id]["max"] += float(detail.get("max_points", 0) or 0)
+    return totals
+
+
+def _render_pdf_html(records: List[dict]) -> str:
+    pages: List[str] = []
+    for record in records:
+        exam = record["exam"]
+        student = record["student"]
+        answer_text = record["answer_text"] or ""
+        score_details = record["score_details"]
+        chunks = _split_by_problem_headings(answer_text)
+        score_tree = _build_score_tree(score_details)
+        totals = _compute_problem_totals(score_details)
+        total_score = sum(v["score"] for v in totals.values())
+        total_max = sum(v["max"] for v in totals.values())
+
+        for pid in ["1", "2", "3"]:
+            problem_totals = totals.get(pid, {"score": 0.0, "max": 0.0})
+            header = f"""
+              <div class=\"header\">
+                <div class=\"title\">{exam['name']}</div>
+                <div class=\"meta\">학번/이름: {student['student_id']} {student['name']}</div>
+                <div class=\"meta\">문제별 점수: 1({totals.get('1', {'score':0,'max':0})['score']:.2f}/{totals.get('1', {'score':0,'max':0})['max']:.2f}) |
+                2({totals.get('2', {'score':0,'max':0})['score']:.2f}/{totals.get('2', {'score':0,'max':0})['max']:.2f}) |
+                3({totals.get('3', {'score':0,'max':0})['score']:.2f}/{totals.get('3', {'score':0,'max':0})['max']:.2f})
+                </div>
+                <div class=\"meta\">총점: {total_score:.2f}/{total_max:.2f}</div>
+              </div>
+            """
+            answer_chunk = chunks.get(pid, answer_text)
+
+            def render_node(node_id: str, depth: int) -> str:
+                node = score_tree.get(pid, {}).get("nodes", {}).get(node_id, {})
+                if not node:
+                    return ""
+                is_leaf = node.get("is_leaf", True)
+                deductions = node.get("deductions", []) or []
+                has_deductions = len(deductions) > 0
+                note = node.get("llm", {}).get("note", "")
+                deduction_html = ""
+                if has_deductions:
+                    deduction_html = "<ul class='deductions'>" + "".join(
+                        [f"<li>- {d.get('reason','')} ({d.get('penalty',0)})</li>" for d in deductions]
+                    ) + "</ul>"
+                note_html = f"<div class='note {'note-bad' if has_deductions else 'note-ok'}'>{note}</div>" if note else ""
+                score_line = (
+                    f"<div class='score-line {'deducted' if has_deductions else ''}'>점수: {node.get('score',0)} / {node.get('max_points',0)}</div>"
+                    if is_leaf else ""
+                )
+                children = "".join([render_node(child_id, depth + 1) for child_id in node.get("children", [])])
+                return f"""
+<div class="score-card" style="margin-left:{depth * 12}px">
+  <div class="score-title">{node.get('section_id','')} {node.get('title','')}</div>
+  {score_line}
+  {deduction_html}
+  {note_html}
+</div>
+{children}
+"""
+
+            tree_html = "".join(
+                [render_node(root_id, 0) for root_id in score_tree.get(pid, {}).get("roots", [])]
+            ) or "<div class='empty'>채점 내역이 없습니다.</div>"
+
+            page = f"""
+            <section class=\"page\">
+              {header}
+              <div class=\"problem\">문제 {pid} ({problem_totals['score']:.2f}/{problem_totals['max']:.2f})</div>
+              <div class=\"content\">
+                <div class=\"answer\"><pre>{answer_chunk}</pre></div>
+                <div class=\"grading\">{tree_html}</div>
+              </div>
+            </section>
+            """
+            pages.append(page)
+
+    html = f"""
+    <html>
+    <head>
+      <meta charset=\"utf-8\" />
+      <style>
+        @page {{ size: A4; margin: 12mm; }}
+        body {{ font-family: 'Segoe UI', sans-serif; color: #111; font-size: 9pt; }}
+        .page {{ page-break-after: always; }}
+        .page:last-child {{ page-break-after: auto; }}
+        .header {{ margin-bottom: 8px; }}
+        .title {{ font-size: 12pt; font-weight: 600; }}
+        .meta {{ font-size: 9pt; color: #444; }}
+        .problem {{ font-size: 10pt; font-weight: 600; margin: 8px 0; }}
+        .content {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
+        .answer pre {{ background: #f8f8f8; padding: 10px; border-radius: 6px; white-space: pre-wrap; font-size: 8pt; }}
+        .score-card {{ border: 1px solid #e5e7eb; border-radius: 6px; padding: 4px; margin-bottom: 4px; }}
+        .score-title {{ font-weight: 600; margin-bottom: 4px; font-size: 7pt; }}
+        .score-line.deducted {{ color: #dc2626; font-size: 7pt; }}
+        .score-line {{ font-size: 7pt; }}
+        .deductions {{ color: #dc2626; margin: 6px 0 0 18px; font-size: 7pt; }}
+        .note {{ font-size: 7pt; margin-top: 4px; }}
+        .note-ok {{ color: #444; }}
+        .note-bad {{ color: #dc2626; }}
+        .empty {{ color: #888; font-size: 7pt; }}
+      </style>
+    </head>
+    <body>
+      {''.join(pages)}
+    </body>
+    </html>
+    """
+    return html
+
+
+@app.post("/results/export/pdf")
+def export_results_pdf(payload: ExportPdfRequest, db=Depends(get_db)) -> Response:
+    answer_ids = payload.answer_ids or []
+    mode = payload.mode or "single"
+    if not answer_ids:
+        raise HTTPException(status_code=400, detail="answer_ids required")
+
+    answers = (
+        db.query(StudentAnswer)
+        .filter(StudentAnswer.id.in_(answer_ids))
+        .all()
+    )
+    answer_map = {answer.id: answer for answer in answers}
+    records: List[dict] = []
+    for answer_id in answer_ids:
+        answer = answer_map.get(answer_id)
+        if not answer:
+            continue
+        exam = db.query(Exam).filter(Exam.id == answer.exam_id).first()
+        student = db.query(Student).filter(Student.id == answer.student_id).first()
+        result = (
+            db.query(GradingResult)
+            .filter(GradingResult.answer_id == answer.id)
+            .first()
+        )
+        if not exam or not student or not result:
+            continue
+        record = {
+            "exam": {"id": exam.id, "name": exam.name},
+            "student": {"id": student.id, "student_id": student.student_id, "name": student.name},
+            "answer_text": answer.answer_text,
+            "score_details": json.loads(result.result_json).get("score_details", []),
+        }
+        records.append(record)
+
+    if not records:
+        raise HTTPException(status_code=404, detail="no records")
+
+    if mode == "batch":
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            for record in records:
+                html = _render_pdf_html([record])
+                pdf_bytes = HTML(string=html).write_pdf()
+                filename = f"{record['student']['student_id']}_{record['student']['name']}.pdf"
+                zf.writestr(filename, pdf_bytes)
+        zip_bytes = buffer.getvalue()
+        return Response(
+            content=zip_bytes,
+            media_type="application/zip",
+            headers={"Content-Disposition": 'attachment; filename="grading_selected.zip"'},
+        )
+
+    html = _render_pdf_html(records)
+    pdf_bytes = HTML(string=html).write_pdf()
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": 'attachment; filename="grading_selected.pdf"'},
+    )
 
 
 @app.delete("/answers/{answer_id}")

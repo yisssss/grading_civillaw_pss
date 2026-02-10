@@ -20,6 +20,8 @@ export const studentsApi = {
   list: () => api.get("/students").then((r) => r.data),
   create: (payload: { student_id: string; name: string }) =>
     api.post("/students", payload).then((r) => r.data),
+  update: (studentId: number, payload: { student_id: string; name: string }) =>
+    api.put(`/students/${studentId}`, payload).then((r) => r.data),
   delete: (studentId: number) => api.delete(`/students/${studentId}`).then((r) => r.data),
 };
 
@@ -41,6 +43,10 @@ export const gradeApi = {
     api.post(`/grade/run?answer_id=${answerId}&use_llm=${useLlm}`).then((r) => r.data),
   getResult: (answerId: number) =>
     api.get(`/results/${answerId}`).then((r) => r.data),
+  updateResult: (answerId: number, resultJson: object) =>
+    api.put(`/results/${answerId}`, { result_json: resultJson }).then((r) => r.data),
+  exportPdf: (payload: { answer_ids: number[]; mode: "single" | "batch" }) =>
+    api.post("/results/export/pdf", payload, { responseType: "blob" }),
   listResults: (examId?: number, studentId?: number) => {
     const params: Record<string, number> = {};
     if (examId) params.exam_id = examId;

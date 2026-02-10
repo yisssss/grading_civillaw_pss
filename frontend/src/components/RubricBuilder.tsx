@@ -63,22 +63,6 @@ const getNextLabel = (depth: number, siblings: SectionNode[]) => {
   return KOREAN_LABELS[nextIndex] ?? `${siblings.length + 1}`;
 };
 
-const renderUnderlinedPreview = (text: string) => {
-  if (!text) return null;
-  const parts = text.split(/(__[^_]+__)/g).filter((part) => part !== "");
-  return parts.map((part, index) => {
-    if (part.startsWith("__") && part.endsWith("__") && part.length > 4) {
-      const inner = part.slice(2, -2);
-      return (
-        <span key={`${index}-${inner}`} className="underline decoration-2 text-blue-700">
-          {inner}
-        </span>
-      );
-    }
-    return <span key={`${index}-${part}`}>{part}</span>;
-  });
-};
-
 const toNumber = (value: number | "") => {
   if (value === "") return null;
   const parsed = Number(value);
@@ -95,21 +79,32 @@ const sumSectionPoints = (section: SectionNode): number => {
 const sumProblemPoints = (problem: ProblemNode): number =>
   problem.sections.reduce((sum, section) => sum + sumSectionPoints(section), 0);
 
-export default function RubricBuilder() {
+type RubricBuilderProps = {
+  fixedExamId?: number | null;
+  hideExamSelector?: boolean;
+  onSaved?: () => void;
+};
+
+export default function RubricBuilder({
+  fixedExamId = null,
+  hideExamSelector = false,
+  onSaved,
+}: RubricBuilderProps) {
   const idRef = useRef(0);
-  const [contexts, setContexts] = useState<ContextState[]>([
+  const createEmptyContexts = (): ContextState[] => [
     { fact_pattern: "", question: "" },
     { fact_pattern: "", question: "" },
     { fact_pattern: "", question: "" },
-  ]);
+  ];
+  const [contexts, setContexts] = useState<ContextState[]>(createEmptyContexts);
   const [exams, setExams] = useState<Array<{ id: number; name: string }>>([]);
   const [selectedExamId, setSelectedExamId] = useState<number | null>(null);
-  const [newExamName, setNewExamName] = useState("");
-  const [savedRubricJson, setSavedRubricJson] = useState<string>("");
-  const [problems, setProblems] = useState<ProblemNode[]>([
+  const createDefaultProblems = (): ProblemNode[] => [
     { id: "1", total_points: "", sections: [] },
-  ]);
-  const [sendNullForEmptySubsections, setSendNullForEmptySubsections] = useState(false);
+    { id: "2", total_points: "", sections: [] },
+    { id: "3", total_points: "", sections: [] },
+  ];
+  const [problems, setProblems] = useState<ProblemNode[]>(createDefaultProblems);
   const [actionMessage, setActionMessage] = useState("");
   const [isSaving, setIsSaving] = useState(false);
 
@@ -126,27 +121,33 @@ export default function RubricBuilder() {
   };
 
   useEffect(() => {
-    loadExams();
-  }, []);
+    if (!hideExamSelector) {
+      loadExams();
+    }
+  }, [hideExamSelector]);
 
   useEffect(() => {
-    const loadRubricJson = async () => {
+    if (fixedExamId) {
+      setSelectedExamId(fixedExamId);
+    }
+  }, [fixedExamId]);
+
+  useEffect(() => {
+    const init = async () => {
       if (!selectedExamId) {
-        setSavedRubricJson("");
+        setContexts(createEmptyContexts());
+        setProblems(normalizeProblems([]));
         return;
       }
       try {
         const data = await examsApi.getRubricJson(selectedExamId);
-        const jsonText =
-          typeof data.rubric_json === "string"
-            ? data.rubric_json
-            : JSON.stringify(data.rubric_json, null, 2);
-        setSavedRubricJson(jsonText);
+        applyRubricJson(data.rubric_json);
       } catch {
-        setSavedRubricJson("");
+        setContexts(createEmptyContexts());
+        setProblems(normalizeProblems([]));
       }
     };
-    loadRubricJson();
+    init();
   }, [selectedExamId]);
 
   const nextId = () => {
@@ -154,14 +155,73 @@ export default function RubricBuilder() {
     return `section-${idRef.current}`;
   };
 
-  const createSection = (depth: number, siblings: SectionNode[]): SectionNode => ({
+  const createSection = (depth: number, siblings: SectionNode[], label?: string): SectionNode => ({
     _id: nextId(),
-    label: getNextLabel(depth, siblings),
+    label: label ?? getNextLabel(depth, siblings),
     title: "",
     points: "",
     content: "",
     sub_sections: [],
   });
+
+  const normalizeProblems = (items: ProblemNode[]): ProblemNode[] => {
+    const seed = createDefaultProblems();
+    const filled = seed.map((problem, index) => {
+      const incoming = items[index];
+      return incoming
+        ? {
+            ...incoming,
+            id: `${index + 1}`,
+            sections: incoming.sections ?? [],
+          }
+        : problem;
+    });
+    return filled;
+  };
+
+  const buildSectionFromPayload = (section: any): SectionNode => ({
+    _id: nextId(),
+    label: section?.label ?? "",
+    title: section?.title ?? "",
+    points: section?.points ?? "",
+    content: section?.content ?? "",
+    sub_sections: Array.isArray(section?.sub_sections)
+      ? section.sub_sections.map(buildSectionFromPayload)
+      : [],
+  });
+
+  const applyRubricJson = (raw: any) => {
+    if (!raw) {
+      setContexts(createEmptyContexts());
+      setProblems(normalizeProblems([]));
+      return;
+    }
+    let parsed = raw;
+    if (typeof raw === "string") {
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        parsed = null;
+      }
+    }
+    const contextPayload = Array.isArray(parsed?.context) ? parsed.context : [];
+    const normalizedContexts = createEmptyContexts().map((item, index) => ({
+      fact_pattern: contextPayload[index]?.fact_pattern ?? item.fact_pattern,
+      question: contextPayload[index]?.question ?? item.question,
+    }));
+    const problemPayload = Array.isArray(parsed?.problems) ? parsed.problems : [];
+    const normalizedProblems = normalizeProblems(
+      problemPayload.map((problem: any) => ({
+        id: problem?.id ?? "",
+        total_points: problem?.total_points ?? "",
+        sections: Array.isArray(problem?.sections)
+          ? problem.sections.map(buildSectionFromPayload)
+          : [],
+      })),
+    );
+    setContexts(normalizedContexts);
+    setProblems(normalizedProblems);
+  };
 
   const updateSectionById = (
     sections: SectionNode[],
@@ -185,17 +245,6 @@ export default function RubricBuilder() {
         ...section,
         sub_sections: removeSectionById(section.sub_sections, targetId),
       }));
-
-  const handleAddProblem = () => {
-    setProblems((prev) => [
-      ...prev,
-      { id: `${prev.length + 1}`, total_points: "", sections: [] },
-    ]);
-  };
-
-  const handleRemoveProblem = (index: number) => {
-    setProblems((prev) => prev.filter((_, idx) => idx !== index));
-  };
 
   const handleAddSection = (problemIndex: number) => {
     setProblems((prev) =>
@@ -260,7 +309,7 @@ export default function RubricBuilder() {
         title: section.title.trim(),
         points: toNumber(section.points),
         content: section.content.trim(),
-        sub_sections: hasChildren ? normalizedChildren : sendNullForEmptySubsections ? null : [],
+        sub_sections: hasChildren ? normalizedChildren : [],
       };
     };
 
@@ -289,6 +338,7 @@ export default function RubricBuilder() {
       const payload = buildPayload();
       const result = await rubricApi.create(payload);
       setActionMessage(`저장 완료: ${JSON.stringify(result)}`);
+      onSaved?.();
     } catch {
       setActionMessage("저장 실패: 서버 요청을 확인하세요.");
     } finally {
@@ -296,23 +346,6 @@ export default function RubricBuilder() {
     }
   };
 
-  const handleCreateExam = async () => {
-    if (!newExamName.trim()) {
-      setActionMessage("시험명을 입력하세요.");
-      return;
-    }
-    try {
-      const result = await examsApi.createEmpty({ name: newExamName.trim() });
-      setNewExamName("");
-      setActionMessage("시험이 등록되었습니다.");
-      await loadExams();
-      if (result?.exam_id) {
-        setSelectedExamId(result.exam_id);
-      }
-    } catch {
-      setActionMessage("시험 등록 실패");
-    }
-  };
 
   const renderSection = (
     section: SectionNode,
@@ -323,7 +356,7 @@ export default function RubricBuilder() {
     const childSum = section.sub_sections.reduce((sum, child) => sum + sumSectionPoints(child), 0);
     const points = toNumber(section.points);
     const isOver = points !== null && childSum > points;
-    const nextSuggestion = getNextLabel(depth, siblings);
+    const canDelete = depth > 0;
 
     return (
       <div key={section._id} className="border rounded p-3 mb-3" style={{ marginLeft: depth * 16 }}>
@@ -340,18 +373,6 @@ export default function RubricBuilder() {
                 }))
               }
             />
-            <button
-              type="button"
-              className="text-xs text-blue-700 underline"
-              onClick={() =>
-                handleUpdateSection(problemIndex, section._id, (current) => ({
-                  ...current,
-                  label: nextSuggestion,
-                }))
-              }
-            >
-              추천 라벨: {nextSuggestion}
-            </button>
             <input
               className="border p-2 rounded flex-1"
               placeholder="제목"
@@ -388,10 +409,6 @@ export default function RubricBuilder() {
               }))
             }
           />
-          <div className="text-xs text-gray-600">미리보기</div>
-          <div className="border rounded p-2 bg-gray-50 text-sm whitespace-pre-wrap">
-            {renderUnderlinedPreview(section.content)}
-          </div>
           {section.sub_sections.length > 0 && (
             <div className={`text-sm ${isOver ? "text-red-600" : "text-gray-600"}`}>
               하위 항목 합계: {childSum} / 배점: {points ?? "-"}
@@ -404,15 +421,17 @@ export default function RubricBuilder() {
               className="text-blue-600 underline"
               onClick={() => handleAddSubSection(problemIndex, section._id, depth)}
             >
-              하위 항목 추가
+              이 섹션 하위 항목 추가
             </button>
-            <button
-              type="button"
-              className="text-red-600 underline"
-              onClick={() => handleRemoveSection(problemIndex, section._id)}
-            >
-              삭제
-            </button>
+            {canDelete && (
+              <button
+                type="button"
+                className="text-red-600 underline"
+                onClick={() => handleRemoveSection(problemIndex, section._id)}
+              >
+                삭제
+              </button>
+            )}
           </div>
         </div>
         {section.sub_sections.map((child) =>
@@ -424,45 +443,28 @@ export default function RubricBuilder() {
 
   return (
     <div className="card">
-      <h2 className="text-xl font-semibold mb-4">Rubric Builder</h2>
+      <h2 className="text-xl font-semibold mb-4">채점기준표 등록</h2>
 
-      <div className="grid gap-2 mb-4">
-        <label className="text-sm font-semibold">등록할 시험 선택</label>
-        {exams.length > 0 ? (
-          <select
-            className="border p-2 rounded"
-            value={selectedExamId ?? ""}
-            onChange={(e) => setSelectedExamId(Number(e.target.value))}
-          >
-            {exams.map((exam) => (
-              <option key={exam.id} value={exam.id}>
-                {exam.name} (ID: {exam.id})
-              </option>
-            ))}
-          </select>
-        ) : (
-          <div className="text-sm text-gray-600">등록된 시험이 없습니다.</div>
-        )}
-      </div>
-
-      <div className="grid gap-2 mb-6">
-        <label className="text-sm font-semibold">시험명 등록</label>
-        <div className="flex flex-wrap gap-2">
-          <input
-            className="border p-2 rounded flex-1 min-w-[200px]"
-            placeholder="새 시험명"
-            value={newExamName}
-            onChange={(e) => setNewExamName(e.target.value)}
-          />
-          <button
-            type="button"
-            className="bg-blue-600 text-white rounded px-3 py-2"
-            onClick={handleCreateExam}
-          >
-            시험 등록
-          </button>
+      {!hideExamSelector && (
+        <div className="grid gap-2 mb-4">
+          <label className="text-sm font-semibold">등록할 시험 선택</label>
+          {exams.length > 0 ? (
+            <select
+              className="border p-2 rounded"
+              value={selectedExamId ?? ""}
+              onChange={(e) => setSelectedExamId(Number(e.target.value))}
+            >
+              {exams.map((exam) => (
+                <option key={exam.id} value={exam.id}>
+                  {exam.name} (ID: {exam.id})
+                </option>
+              ))}
+            </select>
+          ) : (
+            <div className="text-sm text-gray-600">등록된 시험이 없습니다.</div>
+          )}
         </div>
-      </div>
+      )}
 
       <div className="grid gap-3 mb-6">
         <h3 className="font-semibold">사실관계/문제</h3>
@@ -495,18 +497,6 @@ export default function RubricBuilder() {
         ))}
       </div>
 
-      <div className="flex items-center gap-2 mb-4">
-        <input
-          id="send-null"
-          type="checkbox"
-          checked={sendNullForEmptySubsections}
-          onChange={(e) => setSendNullForEmptySubsections(e.target.checked)}
-        />
-        <label htmlFor="send-null" className="text-sm text-gray-700">
-          하위 항목이 없을 때 null로 전송
-        </label>
-      </div>
-
       <div className="grid gap-6">
         {problems.map((problem, index) => {
           const total = toNumber(problem.total_points);
@@ -518,16 +508,10 @@ export default function RubricBuilder() {
             <div key={`${problem.id}-${index}`} className="border rounded p-4">
               <div className="flex flex-wrap gap-3 items-center mb-3">
                 <input
-                  className="border p-2 rounded w-24"
+                  className="border p-2 rounded w-24 bg-gray-50 text-gray-600"
                   placeholder="문제 ID"
                   value={problem.id}
-                  onChange={(e) =>
-                    setProblems((prev) =>
-                      prev.map((item, idx) =>
-                        idx === index ? { ...item, id: e.target.value } : item,
-                      ),
-                    )
-                  }
+                  readOnly
                 />
                 <input
                   className="border p-2 rounded w-32"
@@ -553,14 +537,7 @@ export default function RubricBuilder() {
                   className="text-blue-600 underline"
                   onClick={() => handleAddSection(index)}
                 >
-                  섹션(Ⅰ) 추가
-                </button>
-                <button
-                  type="button"
-                  className="text-red-600 underline"
-                  onClick={() => handleRemoveProblem(index)}
-                >
-                  문제 삭제
+                  섹션 추가
                 </button>
               </div>
               <div className={`text-sm ${isOver ? "text-red-600" : "text-gray-600"}`}>
@@ -579,13 +556,6 @@ export default function RubricBuilder() {
       <div className="mt-4 flex gap-3">
         <button
           type="button"
-          className="bg-gray-100 border rounded px-3 py-2"
-          onClick={handleAddProblem}
-        >
-          문제 추가
-        </button>
-        <button
-          type="button"
           className="bg-blue-600 text-white rounded px-3 py-2"
           onClick={handleSave}
           disabled={isSaving}
@@ -595,15 +565,6 @@ export default function RubricBuilder() {
       </div>
 
       {actionMessage && <div className="mt-3 text-sm text-gray-700">{actionMessage}</div>}
-
-      {savedRubricJson && (
-        <div className="mt-6">
-          <h3 className="font-semibold mb-2">저장된 채점 기준표 (읽기 전용)</h3>
-          <pre className="border rounded p-3 bg-gray-50 text-sm whitespace-pre-wrap">
-            {savedRubricJson}
-          </pre>
-        </div>
-      )}
     </div>
   );
 }

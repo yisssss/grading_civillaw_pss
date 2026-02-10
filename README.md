@@ -46,6 +46,22 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 
 ---
 
+### 기존 DB 답안 줄바꿈 정규화
+
+이미 저장된 답안 텍스트를 문단 정규화(헤딩 유지, 나머지 줄 합침)하려면:
+
+```powershell
+# PowerShell (curl은 Invoke-WebRequest 별칭이므로 -X 사용 불가)
+Invoke-WebRequest -Method POST -Uri "http://localhost:8000/answers/normalize-all" -UseBasicParsing
+
+# 실제 curl 사용 시
+curl.exe -X POST http://localhost:8000/answers/normalize-all
+```
+
+응답 예: `{"total": 42, "updated": 38}`
+
+---
+
 ## 주요 기능
 
 - PDF 파일 파싱 (채점기준표, 모범답안, 학생답안)

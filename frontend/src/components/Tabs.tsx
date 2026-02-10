@@ -1,10 +1,12 @@
 "use client";
 
-type TabKey = "exam" | "grading" | "stats";
+type TabKey = "exam" | "grading" | "review" | "students" | "stats";
 
 const tabs: { key: TabKey; label: string }[] = [
   { key: "exam", label: "시험 등록" },
+  { key: "students", label: "학생 관리" },
   { key: "grading", label: "학생 채점" },
+  { key: "review", label: "채점 내역 검토" },
   { key: "stats", label: "시험별 수치" },
 ];
 

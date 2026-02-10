@@ -30,8 +30,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
-        "https://grading-civillaw-pss.onrender.com",
         "https://grading-civillaw-pss-9x3q.onrender.com",
+        "https://grading-civillaw-pss-front.onrender.com",
     ],
     allow_credentials=True,
     allow_methods=["*"],

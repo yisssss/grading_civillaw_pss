@@ -31,7 +31,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "https://grading-civillaw-pss.onrender.com",
-        "https://grading-civillaw-pss-front.onrender.com",
+        "https://grading-civillaw-pss-9x3q.onrender.com",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -820,7 +820,7 @@ def _render_pdf_html(records: List[dict]) -> str:
           src: url('https://fonts.gstatic.com/s/notosanskr/v27/Pj_zJwpxCwjiQLQabb69_8EabcghS6UT.ttf') format('truetype');
         }}
         @page {{ size: A4; margin: 12mm; }}
-        body {{ font-family: 'Nanum Gothic', 'Noto Sans KR', 'Malgun Gothic', 'Segoe UI', sans-serif; color: #111; font-size: 9pt; }}
+        body {{ font-family: 'Noto Sans KR', 'Malgun Gothic', 'Segoe UI', sans-serif; color: #111; font-size: 9pt; }}
         .page {{ page-break-after: always; }}
         .page:last-child {{ page-break-after: auto; }}
         .header {{ margin-bottom: 8px; }}

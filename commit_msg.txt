@@ -1,8 +1,0 @@
-가산 문항을 만점(50)에 합산 안 되도록 수정 및 LLM 출력 토큰 증가
-
-- 배점 0인 가산 문항의 max_points를 0으로 설정 (기존 1→0)
-- 이로써 총 만점이 50점으로 유지되고, 가산점은 획득 시 총점에만 추가됨
-- ScoreDetail에 is_bonus 필드 추가 (백엔드/프론트)
-- GradingReview, StudentGrading UI에서 가산 문항 표시 개선 (가산: +X)
-- LLM max_output_tokens를 2048→4096으로 증가 (긴 답변 대응)
-- safety_settings는 이미 BLOCK_NONE으로 설정되어 있음 확인

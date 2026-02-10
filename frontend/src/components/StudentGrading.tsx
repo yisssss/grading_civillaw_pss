@@ -259,6 +259,7 @@ export default function StudentGrading() {
   const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [selectedProblemTab, setSelectedProblemTab] = useState("1");
   const [answerFontSize, setAnswerFontSize] = useState(14);
+  const [regradingAnswerId, setRegradingAnswerId] = useState<number | null>(null);
 
   const loadData = async () => {
     const examsData = await examsApi.list();
@@ -660,8 +661,26 @@ export default function StudentGrading() {
     setScoreDetails(result.score_details || []);
   };
 
+  const handleRegrade = async (answerId: number) => {
+    if (!selectedExam) return;
+    setRegradingAnswerId(answerId);
+    try {
+      await gradeApi.run(answerId, true);
+      await loadAnswers(selectedExam, selectedStudentFilter);
+      if (selectedAnswerId === answerId) await loadAnswerDetail(answerId);
+    } catch {
+      alert("재채점 요청 실패");
+    } finally {
+      setRegradingAnswerId(null);
+    }
+  };
+
   const studentsById = useMemo(() => {
     return new Map(students.map((student) => [student.id, student]));
+  }, [students]);
+
+  const sortedStudents = useMemo(() => {
+    return [...students].sort((a, b) => (a.name ?? "").localeCompare(b.name ?? "", "ko"));
   }, [students]);
 
   const selectedAnswer = useMemo(
@@ -675,8 +694,8 @@ export default function StudentGrading() {
 
   const filteredStudents = useMemo(() => {
     const keyword = normalizeText(studentSearch);
-    if (!keyword) return students;
-    return students.filter((student) => normalizeText(`${student.student_id} ${student.name}`).includes(keyword));
+    const list = !keyword ? students : students.filter((student) => normalizeText(`${student.student_id} ${student.name}`).includes(keyword));
+    return [...list].sort((a, b) => (a.name ?? "").localeCompare(b.name ?? "", "ko"));
   }, [students, studentSearch]);
 
   const sortedAnswers = useMemo(() => {
@@ -844,7 +863,7 @@ export default function StudentGrading() {
                     onChange={(e) => handleQueueStudentChange(index, e.target.value)}
                   >
                     <option value="">학생 선택</option>
-                    {students.map((student) => (
+                    {sortedStudents.map((student) => (
                       <option key={student.id} value={student.id}>
                         {student.name} ({student.student_id})
                       </option>
@@ -895,7 +914,7 @@ export default function StudentGrading() {
               onChange={(e) => setTextStudentId(Number(e.target.value))}
             >
               <option value="">선택</option>
-              {students.map((student) => (
+              {sortedStudents.map((student) => (
                 <option key={student.id} value={student.id}>
                   {student.name} ({student.student_id})
                 </option>
@@ -1031,6 +1050,7 @@ export default function StudentGrading() {
                 <th className="text-left p-2 border">점수</th>
                 <th className="text-left p-2 border">등록일</th>
                 <th className="text-left p-2 border">상세</th>
+                <th className="text-left p-2 border">재채점</th>
                 <th className="text-left p-2 border">삭제</th>
               </tr>
             </thead>
@@ -1059,6 +1079,15 @@ export default function StudentGrading() {
                     </td>
                     <td className="p-2 border">
                       <button
+                        className="text-green-600 underline disabled:opacity-50"
+                        disabled={regradingAnswerId === answer.id}
+                        onClick={() => handleRegrade(answer.id)}
+                      >
+                        {regradingAnswerId === answer.id ? "채점 중..." : "재채점"}
+                      </button>
+                    </td>
+                    <td className="p-2 border">
+                      <button
                         className="text-red-600 underline"
                         onClick={async () => {
                           if (confirm("삭제하시겠습니까?")) {
@@ -1079,7 +1108,7 @@ export default function StudentGrading() {
               })}
               {!answers.length && (
                 <tr>
-                  <td className="p-3 text-center text-gray-500" colSpan={7}>
+                  <td className="p-3 text-center text-gray-500" colSpan={8}>
                     조회된 답안이 없습니다.
                   </td>
                 </tr>

@@ -195,6 +195,11 @@ export default function GradingReview() {
 
   const studentsById = useMemo(() => new Map(students.map((s) => [s.id, s])), [students]);
 
+  const sortedStudents = useMemo(
+    () => [...students].sort((a, b) => (a.name ?? "").localeCompare(b.name ?? "", "ko")),
+    [students]
+  );
+
   const filteredAnswers = useMemo(() => {
     const keyword = studentSearch.trim().toLowerCase().replace(/\s+/g, "");
     if (!keyword) return answers;
@@ -765,7 +770,7 @@ export default function GradingReview() {
               onChange={(e) => setSelectedStudentFilter(e.target.value ? Number(e.target.value) : null)}
             >
               <option value="">전체</option>
-              {students.map((student) => (
+              {sortedStudents.map((student) => (
                 <option key={student.id} value={student.id}>
                   {student.name} ({student.student_id})
                 </option>

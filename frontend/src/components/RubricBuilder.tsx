@@ -387,6 +387,7 @@ export default function RubricBuilder({
             <input
               className="border p-2 rounded w-28"
               type="number"
+              min={0}
               step="0.5"
               placeholder="배점"
               value={section.points}
@@ -397,6 +398,9 @@ export default function RubricBuilder({
                 }))
               }
             />
+            <span className="text-xs text-gray-500">
+              (0 = 가산: 기본 0점, 채점검토에서 담당자가 +1 부여)
+            </span>
           </div>
           <textarea
             className="border p-2 rounded min-h-[80px]"

@@ -9,6 +9,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from weasyprint import HTML
 
@@ -38,6 +39,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _sync_grading_results_id_sequence(db) -> None:
+    """PostgreSQL에서 grading_results.id 시퀀스를 현재 MAX(id)에 맞춘다."""
+    bind = db.get_bind()
+    if not bind or bind.dialect.name != "postgresql":
+        return
+    db.execute(
+        text(
+            """
+            SELECT setval(
+                pg_get_serial_sequence('grading_results', 'id'),
+                COALESCE((SELECT MAX(id) FROM grading_results), 0) + 1,
+                false
+            )
+            """
+        )
+    )
 
 
 class StudentCreate(BaseModel):
@@ -593,25 +612,6 @@ def list_answers(
     return {"items": items}
 
 
-def _save_grading_result(db, answer_id: int, result_json: str) -> None:
-    """채점 결과 저장. 기존 행이 있으면 갱신, 없으면 INSERT. 시퀀스 꼬임 시 재시도로 업데이트."""
-    row = db.query(GradingResult).filter(GradingResult.answer_id == answer_id).first()
-    if row:
-        row.result_json = result_json
-    else:
-        db.add(GradingResult(answer_id=answer_id, result_json=result_json))
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        row = db.query(GradingResult).filter(GradingResult.answer_id == answer_id).first()
-        if row:
-            row.result_json = result_json
-            db.commit()
-        else:
-            raise
-
-
 @app.post("/grade/run")
 def grade_run(
     answer_id: int,
@@ -642,7 +642,37 @@ def grade_run(
         print(f"[DEBUG] LLM returned {len(llm_results)} results")
         final_result = merge_llm_results(base_result, llm_results)
 
-    _save_grading_result(db, answer.id, json.dumps(final_result, ensure_ascii=False))
+    payload = json.dumps(final_result, ensure_ascii=False)
+    existing = (
+        db.query(GradingResult)
+        .filter(GradingResult.answer_id == answer.id)
+        .first()
+    )
+    if existing:
+        existing.result_json = payload
+    else:
+        db.add(GradingResult(answer_id=answer.id, result_json=payload))
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        error_text = str(getattr(exc, "orig", exc))
+
+        if "grading_results_pkey" in error_text:
+            # SQLite -> PostgreSQL 마이그레이션 이후 시퀀스 불일치로 중복 PK가 날 수 있음.
+            _sync_grading_results_id_sequence(db)
+            existing = (
+                db.query(GradingResult)
+                .filter(GradingResult.answer_id == answer.id)
+                .first()
+            )
+            if existing:
+                existing.result_json = payload
+            else:
+                db.add(GradingResult(answer_id=answer.id, result_json=payload))
+            db.commit()
+        else:
+            raise
     return final_result
 
 

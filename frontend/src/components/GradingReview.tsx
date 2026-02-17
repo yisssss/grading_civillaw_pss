@@ -101,17 +101,35 @@ function escapeHtml(value: string) {
 
 function formatAnswerForDisplay(text: string) {
   if (!text) return "";
+  const dateLineRegex = /^\s*\d{4}\.\s*\d{1,2}\.\s*\d{1,2}\.?\s*$/;
   const headingRegex =
     /^\s*(?!제\d+(조|항|호)\b)(?:[ⅠⅡⅢⅣⅤⅥⅦⅧⅨIV]{1,6}\.|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨIV]{1,6}(?=\s|$)|\d+\.|\(\d+\)|\([가나다라마바사아자차카타파하]\))/;
   const inlineBreakRegex =
     /(\s)(?!(?:제)\d+(조|항|호)\b)([ⅠⅡⅢⅣⅤⅥⅦⅧⅨIV]{1,6}\.|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨIV]{1,6}(?=\s)|\d+\.|\(\d+\)|\([가나다라마바사아자차카타파하]\))/g;
+  const colonBreakRegex = /:(\s+)(?=\S)/g;
 
-  const withInlineBreaks = text.replace(inlineBreakRegex, "\n$3");
-  const lines = withInlineBreaks.split(/\r?\n/);
+  const withInlineBreaks = text.replace(
+    inlineBreakRegex,
+    (match, _space: string, _group2: string, token: string, offset: number, source: string) => {
+      // 날짜(예: 2026. 2. 10.) 숫자 토큰은 시작/중간/끝 모두 줄바꿈 대상에서 제외.
+      if (/^\d+\.$/.test(token)) {
+        const prefix = source.slice(Math.max(0, offset - 20), offset);
+        const suffix = source.slice(offset + match.length, offset + match.length + 20);
+        const isMiddleOrEndOfDate = /\d\.\s*$/.test(prefix);
+        const isStartOfDate = /^\s*\d{1,2}\.\s*\d{1,2}\.?/.test(suffix);
+        if (isMiddleOrEndOfDate || isStartOfDate) {
+          return match;
+        }
+      }
+      return `\n${token}`;
+    }
+  );
+  const withColonBreaks = withInlineBreaks.replace(colonBreakRegex, ":\n");
+  const lines = withColonBreaks.split(/\r?\n/);
   const formatted: string[] = [];
   for (const line of lines) {
     const trimmed = line.trim();
-    if (trimmed && headingRegex.test(trimmed)) {
+    if (trimmed && !dateLineRegex.test(trimmed) && headingRegex.test(trimmed)) {
       if (formatted.length && formatted[formatted.length - 1].trim() !== "") {
         formatted.push("");
       }
@@ -123,7 +141,9 @@ function formatAnswerForDisplay(text: string) {
 
 function detectHeadingLevel(line: string) {
   const trimmed = line.trim();
+  const dateLineRegex = /^\d{4}\.\s*\d{1,2}\.\s*\d{1,2}\.?$/;
   if (!trimmed || /^\s*제\d+(조|항|호)\b/.test(trimmed)) return null;
+  if (dateLineRegex.test(trimmed)) return null;
   if (/^[ⅠⅡⅢⅣⅤⅥⅦⅧⅨIV]{1,6}\./.test(trimmed) || /^[ⅠⅡⅢⅣⅤⅥⅦⅧⅨIV]{1,6}\b/.test(trimmed)) {
     return 1;
   }
@@ -1029,6 +1049,7 @@ export default function GradingReview() {
                       const detail = group.nodes[nodeId];
                       if (!detail) return null;
                       const hasDeductions = (detail.deductions || []).length > 0;
+                      const hasNote = Boolean(detail.llm?.note);
                       const isActive = activeSectionId === detail.section_id;
                       const isLeaf = detail.is_leaf !== false;
                       const childSummary = childScoreMap[detail.section_id];
@@ -1050,13 +1071,20 @@ export default function GradingReview() {
                               {detail.section_id} {detail.title}
                             </button>
                             {!isActive && isLeaf && (
-                              <div className={hasDeductions ? "text-red-600" : "text-gray-800"}>
-                                {detail.is_bonus ? (
-                                  <span className="text-blue-600">가산: +{detail.score}</span>
-                                ) : (
-                                  <>점수: {detail.score} / {detail.max_points}</>
+                              <>
+                                <div className={hasDeductions ? "text-red-600" : "text-gray-800"}>
+                                  {detail.is_bonus ? (
+                                    <span className="text-blue-600">가산: +{detail.score}</span>
+                                  ) : (
+                                    <>점수: {detail.score} / {detail.max_points}</>
+                                  )}
+                                </div>
+                                {hasNote && (
+                                  <div className={`mt-1 text-[9pt] ${hasDeductions ? "text-red-600" : "text-gray-700"}`}>
+                                    {detail.llm?.note}
+                                  </div>
                                 )}
-                              </div>
+                              </>
                             )}
                             {!isActive && !isLeaf && (
                               <div className="text-sm text-gray-500">

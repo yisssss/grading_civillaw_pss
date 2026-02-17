@@ -51,6 +51,7 @@ function splitParagraphs(text: string) {
 
 function formatAnswerForDisplay(text: string) {
   if (!text) return "";
+  const dateLineRegex = /^\s*\d{4}\.\s*\d{1,2}\.\s*\d{1,2}\.?\s*$/;
   const headingRegex =
     /^\s*(?!제\d+(조|항|호)\b)(?:[ⅠⅡⅢⅣⅤⅥⅦⅧⅨIV]{1,6}\.|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨIV]{1,6}(?=\s|$)|\d+\.|\(\d+\)|\([가나다라마바사아자차카타파하]\))/;
   const inlineBreakRegex =
@@ -75,7 +76,7 @@ function formatAnswerForDisplay(text: string) {
   const formatted: string[] = [];
   for (const line of lines) {
     const trimmed = line.trim();
-    if (trimmed && headingRegex.test(trimmed)) {
+    if (trimmed && !dateLineRegex.test(trimmed) && headingRegex.test(trimmed)) {
       if (formatted.length && formatted[formatted.length - 1].trim() !== "") {
         formatted.push("");
       }
@@ -87,7 +88,9 @@ function formatAnswerForDisplay(text: string) {
 
 function detectHeadingLevel(line: string) {
   const trimmed = line.trim();
+  const dateLineRegex = /^\d{4}\.\s*\d{1,2}\.\s*\d{1,2}\.?$/;
   if (!trimmed || /^\s*제\d+(조|항|호)\b/.test(trimmed)) return null;
+  if (dateLineRegex.test(trimmed)) return null;
   if (/^[ⅠⅡⅢⅣⅤⅥⅦⅧⅨIV]{1,6}\./.test(trimmed) || /^[ⅠⅡⅢⅣⅤⅥⅦⅧⅨIV]{1,6}\b/.test(trimmed)) {
     return 1;
   }

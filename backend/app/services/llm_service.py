@@ -7,7 +7,6 @@ from typing import Dict, List, Optional
 import google.generativeai as genai
 from google.generativeai import caching
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 from ..config import get_settings
 from .answer_parser import split_by_problem_headings
@@ -141,6 +140,89 @@ def _truncate_text(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return f"{text[:limit]}\n...[truncated]"
+
+
+def _round_to_half(value: float) -> float:
+    return round(value * 2) / 2.0
+
+
+def _format_half(value: float) -> str:
+    if float(value).is_integer():
+        return f"{int(value)}"
+    return f"{value:.1f}"
+
+
+def _build_fixed_note(writing_status: str, total_penalty: float) -> str:
+    # note 말투를 "~함." 형태로 통일
+    if writing_status == "Missing":
+        return "판단의 핵심 요건을 제시하지 못함."
+    if writing_status == "Incomplete":
+        if total_penalty > 0:
+            return f"판단의 핵심 요건을 일부 파악했으나 총 {_format_half(total_penalty)}점 감점됨."
+        return "판단의 핵심 요건을 일부 파악했으나 논리 전개가 불완전함."
+    if total_penalty > 0:
+        return f"판단의 핵심 요건을 파악했으나 총 {_format_half(total_penalty)}점 감점됨."
+    return "판단의 핵심 요건을 잘 파악함."
+
+
+def _normalize_deductions_and_score(
+    parsed: Dict[str, object],
+    section: Dict[str, object],
+) -> Dict[str, object]:
+    max_points = float(section.get("points", 0) or 0)
+    max_points = _round_to_half(max_points)
+    writing_status = str(parsed.get("writing_status", "Full"))
+
+    raw_deductions = parsed.get("deductions", [])
+    deductions: List[Dict[str, object]] = []
+    if isinstance(raw_deductions, list):
+        for raw in raw_deductions:
+            if not isinstance(raw, dict):
+                continue
+            reason = str(raw.get("reason", "")).strip() or "감점"
+            try:
+                penalty = float(raw.get("penalty", 0) or 0)
+            except (TypeError, ValueError):
+                penalty = 0.0
+            penalty = _round_to_half(max(0.0, penalty))
+            if penalty <= 0:
+                continue
+            deductions.append({"reason": reason, "penalty": penalty})
+
+    try:
+        llm_score = float(parsed.get("score", max_points) or 0)
+    except (TypeError, ValueError):
+        llm_score = 0.0
+    llm_score = _round_to_half(max(0.0, min(max_points, llm_score)))
+
+    if writing_status == "Missing" or parsed.get("is_written") is False:
+        total_penalty = max_points
+        deductions = [{"reason": "해당 내용 미작성", "penalty": total_penalty}] if max_points > 0 else []
+        final_score = 0.0
+    else:
+        if deductions:
+            total_penalty = _round_to_half(sum(float(d.get("penalty", 0) or 0) for d in deductions))
+            total_penalty = min(total_penalty, max_points)
+            final_score = _round_to_half(max(0.0, max_points - total_penalty))
+        else:
+            total_penalty = _round_to_half(max(0.0, max_points - llm_score))
+            final_score = _round_to_half(max(0.0, max_points - total_penalty))
+            if total_penalty > 0:
+                deductions = [{"reason": "평가 기준 반영 감점", "penalty": total_penalty}]
+
+        if writing_status == "Incomplete":
+            score_cap = _round_to_half(max_points * 0.3)
+            if final_score > score_cap:
+                additional_penalty = _round_to_half(final_score - score_cap)
+                final_score = score_cap
+                if additional_penalty > 0:
+                    deductions.append({"reason": "논리 전개 불완전", "penalty": additional_penalty})
+                total_penalty = _round_to_half(max_points - final_score)
+
+    parsed["deductions"] = deductions
+    parsed["score"] = final_score
+    parsed["note"] = _build_fixed_note(writing_status, _round_to_half(max_points - final_score))
+    return parsed
 
 
 def grade_with_gemini(
@@ -344,12 +426,13 @@ def grade_with_gemini(
                 if writing_status == "Incomplete":
                     # 중단된 답안: 기본 감점 적용 (없을 경우)
                     if "deductions" not in parsed or not parsed["deductions"]:
-                        penalty = float(section.get("points", 0)) * 0.7
+                        penalty = _round_to_half(float(section.get("points", 0)) * 0.7)
                         parsed["score"] = max(0.0, float(parsed.get("score", 0)) - penalty)
                         parsed["deductions"] = [{"reason": "논리 중단/결론 미작성", "penalty": penalty}]
                         print(f"[DEBUG LLM] Section {section.get('id')}: INCOMPLETE, penalty applied")
                     max_points = float(section.get("points", 0))
                     parsed["score"] = min(float(parsed.get("score", 0)), max_points * 0.3)
+                parsed = _normalize_deductions_and_score(parsed, section)
                 llm_result = parsed
             else:
                 llm_result = {

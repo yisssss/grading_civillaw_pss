@@ -13,6 +13,11 @@ from .answer_parser import split_by_problem_headings
 # from .answer_parser import clean_student_ocr  # No longer needed, split_by_problem_headings
 from .grading_service import is_llm_relevant_section
 
+INCOMPLETE_CAP_RATIO = 0.3
+EVIDENCE_FAIL_CAP_RATIO = 0.5
+MIN_EVIDENCE_LEN_DEFAULT = 30
+MIN_EVIDENCE_LEN_CONCLUSION = 10
+
 
 def _build_system_instruction(model_text: str = "") -> str:
     """시스템 인스트럭션 (캐시 가능)"""
@@ -146,28 +151,27 @@ def _round_to_half(value: float) -> float:
     return round(value * 2) / 2.0
 
 
-def _format_half(value: float) -> str:
-    if float(value).is_integer():
-        return f"{int(value)}"
-    return f"{value:.1f}"
-
-
-def _build_fixed_note(writing_status: str, total_penalty: float) -> str:
-    # note 말투를 "~함." 형태로 통일
-    if writing_status == "Missing":
-        return "판단의 핵심 요건을 제시하지 못함."
-    if writing_status == "Incomplete":
-        if total_penalty > 0:
-            return f"판단의 핵심 요건을 일부 파악했으나 총 {_format_half(total_penalty)}점 감점됨."
-        return "판단의 핵심 요건을 일부 파악했으나 논리 전개가 불완전함."
-    if total_penalty > 0:
-        return f"판단의 핵심 요건을 파악했으나 총 {_format_half(total_penalty)}점 감점됨."
-    return "판단의 핵심 요건을 잘 파악함."
+def _normalize_note_tone(note: object) -> str:
+    """LLM이 생성한 note 내용을 유지하면서 종결 어미만 '~함.' 형태로 통일."""
+    text = str(note or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"[.?!]+$", "", text).strip()
+    text = re.sub(r"(입니다|됩니다|되었다|했다|하였다|다|요)$", "", text).strip()
+    if text.endswith("됨"):
+        text = f"{text[:-1]}함"
+    elif text.endswith("함"):
+        pass
+    else:
+        text = f"{text}함"
+    return f"{text}."
 
 
 def _normalize_deductions_and_score(
     parsed: Dict[str, object],
     section: Dict[str, object],
+    evidence_is_valid: bool = True,
 ) -> Dict[str, object]:
     max_points = float(section.get("points", 0) or 0)
     max_points = _round_to_half(max_points)
@@ -203,25 +207,35 @@ def _normalize_deductions_and_score(
         if deductions:
             total_penalty = _round_to_half(sum(float(d.get("penalty", 0) or 0) for d in deductions))
             total_penalty = min(total_penalty, max_points)
-            final_score = _round_to_half(max(0.0, max_points - total_penalty))
+            score_from_penalty = _round_to_half(max(0.0, max_points - total_penalty))
+            final_score = _round_to_half(min(llm_score, score_from_penalty))
         else:
-            total_penalty = _round_to_half(max(0.0, max_points - llm_score))
-            final_score = _round_to_half(max(0.0, max_points - total_penalty))
+            final_score = llm_score
+            total_penalty = _round_to_half(max(0.0, max_points - final_score))
             if total_penalty > 0:
                 deductions = [{"reason": "평가 기준 반영 감점", "penalty": total_penalty}]
 
         if writing_status == "Incomplete":
-            score_cap = _round_to_half(max_points * 0.3)
+            score_cap = _round_to_half(max_points * INCOMPLETE_CAP_RATIO)
             if final_score > score_cap:
                 additional_penalty = _round_to_half(final_score - score_cap)
                 final_score = score_cap
                 if additional_penalty > 0:
                     deductions.append({"reason": "논리 전개 불완전", "penalty": additional_penalty})
-                total_penalty = _round_to_half(max_points - final_score)
+        elif not evidence_is_valid:
+            # 근거가 없거나 학생 답안에 근거 매칭이 안 되면 Full이라도 상한 적용
+            evidence_cap = _round_to_half(max_points * EVIDENCE_FAIL_CAP_RATIO)
+            if final_score > evidence_cap:
+                additional_penalty = _round_to_half(final_score - evidence_cap)
+                final_score = evidence_cap
+                if additional_penalty > 0:
+                    deductions.append({"reason": "근거 문장 불충분", "penalty": additional_penalty})
+
+        total_penalty = _round_to_half(max(0.0, max_points - final_score))
 
     parsed["deductions"] = deductions
     parsed["score"] = final_score
-    parsed["note"] = _build_fixed_note(writing_status, _round_to_half(max_points - final_score))
+    parsed["note"] = _normalize_note_tone(parsed.get("note"))
     return parsed
 
 
@@ -404,21 +418,26 @@ def grade_with_gemini(
                     if "deductions" not in parsed or not parsed["deductions"]:
                         parsed["deductions"] = [{"reason": "해당 내용 미작성", "penalty": section.get("points", 0)}]
                     print(f"[DEBUG LLM] Section {section.get('id')}: NOT WRITTEN, forced score=0")
-                # 근거 문장 필수: evidence 없으면 0점 처리
+                # 근거 문장 검증: 부족/불일치 시 후처리에서 점수 상한 적용
                 evidence_raw = parsed.get("evidence") if isinstance(parsed.get("evidence"), list) else []
                 evidence = _normalize_evidence(evidence_raw)
                 evidence_text = "".join(evidence)
-                min_evidence_len = 10 if _is_conclusion_section(section) else 30
+                min_evidence_len = (
+                    MIN_EVIDENCE_LEN_CONCLUSION if _is_conclusion_section(section) else MIN_EVIDENCE_LEN_DEFAULT
+                )
+                evidence_is_valid = True
                 if not evidence or len(evidence_text.strip()) < min_evidence_len:
                     parsed["evidence"] = ["X"]
                     if "deductions" not in parsed:
                         parsed["deductions"] = []
+                    evidence_is_valid = False
                     print(f"[DEBUG LLM] Section {section.get('id')}: NO EVIDENCE, skipping python override")
                 elif not _evidence_in_student(evidence, cleaned_student):
                     parsed["evidence"] = ["X"]
                     if "deductions" not in parsed:
                         parsed["deductions"] = []
                     parsed["note"] = ""
+                    evidence_is_valid = False
                     print(f"[DEBUG LLM] Section {section.get('id')}: EVIDENCE NOT IN STUDENT, skipping python override")
                 else:
                     parsed["evidence"] = evidence
@@ -432,7 +451,7 @@ def grade_with_gemini(
                         print(f"[DEBUG LLM] Section {section.get('id')}: INCOMPLETE, penalty applied")
                     max_points = float(section.get("points", 0))
                     parsed["score"] = min(float(parsed.get("score", 0)), max_points * 0.3)
-                parsed = _normalize_deductions_and_score(parsed, section)
+                parsed = _normalize_deductions_and_score(parsed, section, evidence_is_valid=evidence_is_valid)
                 llm_result = parsed
             else:
                 llm_result = {

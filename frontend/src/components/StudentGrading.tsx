@@ -55,9 +55,23 @@ function formatAnswerForDisplay(text: string) {
     /^\s*(?!제\d+(조|항|호)\b)(?:[ⅠⅡⅢⅣⅤⅥⅦⅧⅨIV]{1,6}\.|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨIV]{1,6}(?=\s|$)|\d+\.|\(\d+\)|\([가나다라마바사아자차카타파하]\))/;
   const inlineBreakRegex =
     /(\s)(?!(?:제)\d+(조|항|호)\b)([ⅠⅡⅢⅣⅤⅥⅦⅧⅨIV]{1,6}\.|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨIV]{1,6}(?=\s)|\d+\.|\(\d+\)|\([가나다라마바사아자차카타파하]\))/g;
+  const colonBreakRegex = /:(\s+)(?=\S)/g;
 
-  const withInlineBreaks = text.replace(inlineBreakRegex, "\n$3");
-  const lines = withInlineBreaks.split(/\r?\n/);
+  const withInlineBreaks = text.replace(
+    inlineBreakRegex,
+    (match, _space: string, _group2: string, token: string, offset: number, source: string) => {
+      // 날짜(예: 2026. 2. 10.) 내부 숫자 토큰은 줄바꿈 대상에서 제외.
+      if (/^\d+\.$/.test(token)) {
+        const prefix = source.slice(Math.max(0, offset - 12), offset);
+        if (/\d\.\s*$/.test(prefix)) {
+          return match;
+        }
+      }
+      return `\n${token}`;
+    }
+  );
+  const withColonBreaks = withInlineBreaks.replace(colonBreakRegex, ":\n");
+  const lines = withColonBreaks.split(/\r?\n/);
   const formatted: string[] = [];
   for (const line of lines) {
     const trimmed = line.trim();

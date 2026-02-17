@@ -41,6 +41,7 @@ def _build_system_instruction(model_text: str = "") -> str:
   - 결론 미작성: 해당 항목 배점의 70% 감점. (정수 단위로 반올림)
   - 논거 부족/중단: 배점의 50% 이상 감점. (정수 단위로 반올림)
   - note에서 감점을 언급하는 경우 deductions에 반드시 이유/penalty를 명시하라. 
+- **[note 문체]**: note는 반드시 한 문장으로 작성하고 종결형을 `~함.`으로 끝내라.
 
 **반드시 지켜야 할 규칙:**
 - **[강조 표시]**: `__내용__`은 핵심 법리/개념. 판례를 바탕으로 대입하여 채점기준표와 유사하고 정확하게 작성했는지 엄격하게 일치불일치를 확인한다.
@@ -151,23 +152,6 @@ def _round_to_half(value: float) -> float:
     return round(value * 2) / 2.0
 
 
-def _normalize_note_tone(note: object) -> str:
-    """LLM이 생성한 note 내용을 유지하면서 종결 어미만 '~함.' 형태로 통일."""
-    text = str(note or "").strip()
-    if not text:
-        return ""
-    text = re.sub(r"\s+", " ", text).strip()
-    text = re.sub(r"[.?!]+$", "", text).strip()
-    text = re.sub(r"(입니다|됩니다|되었다|했다|하였다|다|요)$", "", text).strip()
-    if text.endswith("됨"):
-        text = f"{text[:-1]}함"
-    elif text.endswith("함"):
-        pass
-    else:
-        text = f"{text}함"
-    return f"{text}."
-
-
 def _normalize_deductions_and_score(
     parsed: Dict[str, object],
     section: Dict[str, object],
@@ -235,7 +219,6 @@ def _normalize_deductions_and_score(
 
     parsed["deductions"] = deductions
     parsed["score"] = final_score
-    parsed["note"] = _normalize_note_tone(parsed.get("note"))
     return parsed
 
 

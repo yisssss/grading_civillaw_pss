@@ -61,10 +61,13 @@ function formatAnswerForDisplay(text: string) {
   const withInlineBreaks = text.replace(
     inlineBreakRegex,
     (match, _space: string, _group2: string, token: string, offset: number, source: string) => {
-      // 날짜(예: 2026. 2. 10.) 내부 숫자 토큰은 줄바꿈 대상에서 제외.
+      // 날짜(예: 2026. 2. 10.) 숫자 토큰은 시작/중간/끝 모두 줄바꿈 대상에서 제외.
       if (/^\d+\.$/.test(token)) {
-        const prefix = source.slice(Math.max(0, offset - 12), offset);
-        if (/\d\.\s*$/.test(prefix)) {
+        const prefix = source.slice(Math.max(0, offset - 20), offset);
+        const suffix = source.slice(offset + match.length, offset + match.length + 20);
+        const isMiddleOrEndOfDate = /\d\.\s*$/.test(prefix);
+        const isStartOfDate = /^\s*\d{1,2}\.\s*\d{1,2}\.?/.test(suffix);
+        if (isMiddleOrEndOfDate || isStartOfDate) {
           return match;
         }
       }
